@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>忆光 · 人生之书</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <main class="screen-page spread-page memory-page">
+    <section class="open-book">
+      <div class="book-spine wide"></div>
+
+      <aside class="page-archive">
+        <div class="page-title">
+          <span class="page-kicker">忆光</span>
+          <h1>这些被轻轻收好的，都是你的人生篇章</h1>
+        </div>
+
+        <div class="new-chapter-panel">
+          <div class="bookmark-tag">新的篇章</div>
+          <textarea id="memoryInput" placeholder="写下一段今天想留下来的话，也可以是一件小事、一个名字、一种气味。"></textarea>
+          <div class="panel-actions">
+            <button onclick="generateMemory()">先收好</button>
+            <button class="ghost-btn" onclick="aiGenerateMemory()">请她帮我整理</button>
+          </div>
+        </div>
+        <div class="page-side-link">
+          <a href="memory-map.html">去按人物、时间、事件整理</a>
+        </div>
+        <div class="memory-candidate-panel">
+          <div class="memory-candidate-head">
+            <div>
+              <span class="page-kicker">待整理线索</span>
+              <h2>先把聊天里提炼出的有效内容放这里</h2>
+              <p>这里只放还没正式入册的线索。你可以再看一眼，决定保留还是丢掉。</p>
+            </div>
+            <button class="ghost-btn" id="memoryCandidateToggle" type="button" onclick="toggleMemoryCandidates()">收起</button>
+          </div>
+          <div class="memory-candidate-list" id="memoryCandidateList"></div>
+        </div>
+      </aside>
+
+      <section class="page-archive-list">
+        <div class="page-head">
+          <div>
+            <span class="page-kicker">翻阅</span>
+            <h2>已经写下的书页</h2>
+          </div>
+          <div class="head-links">
+            <a href="index.html">封面</a>
+            <a href="chat.html">回到温伴</a>
+            <a href="memory-map.html">记忆图谱</a>
+          </div>
+        </div>
+
+        <div class="search-ribbon">
+          <input id="memorySearch" type="text" placeholder="找一个人、一个地点，或某一种心情" />
+        </div>
+
+        <div class="memory-scroll" id="memoryList"></div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

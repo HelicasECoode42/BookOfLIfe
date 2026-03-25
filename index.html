@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>人生之书</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://unpkg.com/live2d-widget@3.1.4/lib/L2Dwidget.min.js"></script>
+  <script src="script.js" defer></script>
+</head>
+<body data-live2d="cover">
+  <main class="screen-page cover-page">
+    <div class="ambient ambient-left"></div>
+    <div class="ambient ambient-right"></div>
+
+    <section class="book-cover">
+      <div class="book-spine"></div>
+
+      <div class="cover-left" style="padding-right: 90px !important;">
+        <nav class="cover-nav">
+          <span class="brand-mark">人生之书</span>
+          <div class="cover-links" style ="margin-right: 60px !important;">
+            <a href="chat.html">温伴</a>
+            <a href="memory.html">忆光</a>
+            <a href="setting.html">设置</a>
+          </div>
+        </nav>
+
+        <div class="cover-copy">
+          <span class="cover-eyebrow">一本会陪你慢慢翻开的书</span>
+          <h1 id="coverGreeting">今天想从何处开始呢？</h1>
+          <div class="today-strip" id="todayStrip">今日札记正在轻轻展开。</div>
+          <section class="presence-panel">
+            <div class="presence-head">
+              <span class="presence-pill">她此刻在这里</span>
+              <span class="presence-dot"></span>
+            </div>
+            <div class="presence-core">
+              <div class="presence-avatar">
+                <div class="presence-ring ring-a"></div>
+                <div class="presence-ring ring-b"></div>
+                <div class="presence-heart"></div>
+              </div>
+              <div class="presence-copy">
+                <strong data-companion-name></strong>
+                <p id="coverPresenceText">正在安静等你开口，也记得你曾说过的一小段旧时光。</p>
+              </div>
+            </div>
+            <div class="presence-memory">
+              <span>她还记得</span>
+              <strong id="coverMemoryHint">外白渡桥边的风</strong>
+            </div>
+          </section>
+          <div class="cover-actions">
+            <a class="primary-link" href="chat.html">开始和她说话</a>
+            <a class="secondary-link" href="memory.html">翻开我的人生之书</a>
+          </div>
+          <div class="cover-quick-links">
+            <a href="memory-map.html">去看记忆图谱</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="cover-right" style="padding-left: 70px !important;">
+        <section class="cover-doll-stage" id="coverDollStage">
+          <div class="doll-shelf"></div>
+          <div class="doll-orbit orbit-one"></div>
+          <div class="doll-orbit orbit-two"></div>
+          <div class="doll-pedestal"></div>
+          <div class="doll-card">
+            <span class="doll-card-label">陪伴</span>
+            <strong data-companion-name></strong>
+            <live2d-widget
+              id="coverDoll"
+              model="https://cdn.jsdelivr.net/gh/stevenjoezhang/live2d-widget-models@latest/tororo/model.json"
+              display-mode="none"
+              mobile-scale="1.0"
+              scale="1.0"
+              z-index="7"
+            ></live2d-widget>
+            <p id="coverDollText">像桌上的小小手办一样陪着你，安静、认真，也会记得你刚讲过的那一页。</p>
+          </div>
+        </section>
+        <div class="floating-chip">
+          <span class="floating-chip-label">这一阶段留下的痕迹</span>
+          <strong id="coverSummaryTitle">慢慢写下来的，不只是片段</strong>
+        </div>
+        <div class="quote-card">
+          <div class="quote-label">她替你翻到的一页</div>
+          <p id="coverQuote">有些故事不需要急着讲完，我们可以慢慢翻开。</p>
+        </div>
+        <section class="cover-widget-grid cover-widget-grid-minimal">
+          <article class="cover-widget cover-widget-primary">
+            <div class="widget-label">值得翻出来的一页</div>
+            <strong id="continueMemoryTitle">外白渡桥边的婚纱照</strong>
+            <p id="continueMemoryText">点开后会带着这一页回到温伴，继续往下说。</p>
+            <button class="ghost-btn" id="continueMemoryBtn" type="button">接着聊</button>
+          </article>
+          <article class="cover-widget cover-widget-secondary">
+            <div class="widget-label">这一阶段的回看</div>
+            <p id="coverSummaryText">一些经常出现的人、地点和心情，会慢慢变成一本书的脉络。</p>
+            <div class="memory-tags" id="coverTagInsights"></div>
+          </article>
+        </section>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

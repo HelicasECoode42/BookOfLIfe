@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>设置 · 人生之书</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <main class="screen-page spread-page settings-page">
+    <section class="open-book">
+      <div class="book-spine wide"></div>
+
+      <aside class="page-archive">
+        <div class="page-title">
+          <span class="page-kicker">书签</span>
+          <h1>把她调成更像你愿意靠近的样子</h1>
+        </div>
+        <p class="settings-copy">
+          这些设置不会直接暴露给用户界面，它们只是让陪伴的语气、颜色和关系感更贴近你想要的感觉。
+        </p>
+      </aside>
+
+      <section class="page-settings-form">
+        <div class="page-head">
+          <div>
+            <span class="page-kicker">细节</span>
+            <h2>调一调这本书的气质</h2>
+          </div>
+          <div class="head-links">
+            <a href="index.html">封面</a>
+            <a href="chat.html">温伴</a>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <label>
+            <span>陪伴对象称呼</span>
+            <input id="profileNameInput" type="text" />
+          </label>
+          <label>
+            <span>她记得你的身份</span>
+            <input id="profileRoleInput" type="text" />
+          </label>
+          <label class="wide">
+            <span>她会常常提到的生活关系</span>
+            <textarea id="profileFamilyInput"></textarea>
+          </label>
+          <label class="wide">
+            <span>更适合被温柔接住的话题</span>
+            <textarea id="profilePreferencesInput"></textarea>
+          </label>
+          <label class="wide">
+            <span>你希望她说话的感觉</span>
+            <input id="profileToneInput" type="text" />
+          </label>
+          <label class="wide">
+            <span>你的说话习惯</span>
+            <input id="profileSpeakingStyleInput" type="text" />
+          </label>
+          <label class="wide">
+            <span>你的看法和价值取向</span>
+            <textarea id="profileWorldviewInput"></textarea>
+          </label>
+          <label class="wide">
+            <span>你明确喜欢的事</span>
+            <textarea id="profileLikesInput"></textarea>
+          </label>
+          <label class="wide">
+            <span>你的习惯</span>
+            <textarea id="profileHabitsInput"></textarea>
+          </label>
+          <label class="wide">
+            <span>你当前在意的目标</span>
+            <textarea id="profileGoalsInput"></textarea>
+          </label>
+          <label class="wide">
+            <span>你明确不喜欢的事</span>
+            <textarea id="profileDislikesInput"></textarea>
+          </label>
+          <label class="wide">
+            <span>你常提到的重要人物</span>
+            <textarea id="profilePeopleInput"></textarea>
+          </label>
+          <label class="wide">
+            <span>希望她长期记住的回忆主题</span>
+            <textarea id="profileMemoriesInput"></textarea>
+          </label>
+          <label>
+            <span>她的名字</span>
+            <input id="companionNameInput" type="text" />
+          </label>
+          <label>
+            <span>书页主色</span>
+            <input id="accentInput" type="color" />
+          </label>
+          <label>
+            <span>字体大小</span>
+            <select id="fontSizeInput">
+              <option value="16px">标准 16px</option>
+              <option value="17px">推荐 17px</option>
+              <option value="19px">偏大 19px</option>
+              <option value="21px">大字 21px</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="panel-actions top-gap">
+          <button onclick="saveSettingsForm()">更新这本书的气质</button>
+        </div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

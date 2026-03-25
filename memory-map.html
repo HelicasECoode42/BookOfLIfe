@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>人生之书 · 温伴</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <main class="screen-page spread-page memory-map-page">
+    <section class="open-book">
+      <div class="book-spine wide"></div>
+
+      <aside class="page-archive">
+        <div class="page-title">
+          <span class="page-kicker">人生之书</span>
+          <h1>不是管理记忆，而是慢慢把回忆写成能读的一页页故事</h1>
+        </div>
+
+        <section class="map-hero-panel">
+          <div class="map-hero-copy">
+            <span class="map-hero-kicker">慢慢成书</span>
+            <p>温伴会把你说过的话，慢慢整理成可以回看的章节。你只需要照常聊天，这本书会自己一点点厚起来。</p>
+          </div>
+        </section>
+
+        <div class="new-chapter-panel map-intro-panel compact">
+          <div class="bookmark-tag">翻书</div>
+          <p>先看已经长成章节的回忆，再点开人物，慢慢往下翻那些具体片段。</p>
+        </div>
+
+        <div class="page-side-link">
+          <a href="memory.html">回到忆光继续写</a>
+        </div>
+      </aside>
+
+      <section class="page-archive-list">
+        <div class="page-head">
+          <div>
+            <span class="page-kicker">章节</span>
+            <h2>先看已经长出来的章节，再决定要不要往下翻</h2>
+          </div>
+          <div class="head-links">
+            <a href="index.html">封面</a>
+            <a href="memory.html">忆光</a>
+            <a href="chat.html">温伴</a>
+          </div>
+        </div>
+
+        <div class="map-toolbar">
+          <div class="search-ribbon">
+            <input id="memoryMapSearch" type="text" placeholder="搜索一个人、一段时间，或一件事" />
+          </div>
+          <div class="map-select-wrap">
+            <select id="memoryMapView">
+              <option value="people">按人物</option>
+              <option value="timeline">按时间</option>
+              <option value="actions">按事件</option>
+            </select>
+          </div>
+        </div>
+
+        <section class="book-overview-section">
+          <div class="memory-photo-wall-head">
+            <div>
+              <span class="page-kicker">先选一种翻法</span>
+              <h3>先点一张卡，再往下翻对应的内容</h3>
+            </div>
+          </div>
+          <div class="book-overview-grid" id="bookOverviewCards"></div>
+        </section>
+
+        <section class="memory-photo-wall-section book-shelf-section" id="bookSectionChapters" hidden>
+          <div class="memory-photo-wall-head">
+            <div>
+              <span class="page-kicker">章节书架</span>
+              <h3>先看这本书现在长出来的几页</h3>
+            </div>
+          </div>
+          <div class="book-chapter-shelf" id="bookChapterShelf"></div>
+        </section>
+
+        <section class="memory-photo-wall-section" id="bookSectionTimeline" hidden>
+          <div class="memory-photo-wall-head">
+            <div>
+              <span class="page-kicker">时间回看</span>
+              <h3>哪段日子更浓一点，一眼就能看到</h3>
+            </div>
+          </div>
+          <div class="memory-time-grid" id="memoryTimeGrid"></div>
+          <div class="memory-timeline-strip" id="memoryTimelineStrip"></div>
+        </section>
+
+        <section class="memory-photo-wall-section" id="bookSectionPeople" hidden>
+          <div class="memory-photo-wall-head">
+            <div>
+              <span class="page-kicker">人物相册</span>
+              <h3>一人一格，点开就看这一条回忆线</h3>
+            </div>
+          </div>
+          <div class="memory-photo-wall" id="memoryPhotoWall"></div>
+        </section>
+
+        <section class="memory-photo-wall-section quiet-section" id="bookSectionThreads" hidden>
+          <div class="memory-photo-wall-head">
+            <div>
+              <span class="page-kicker">人生线索</span>
+              <h3>那些已经慢慢长成脉络的线，先在这里读一眼</h3>
+            </div>
+          </div>
+          <div class="life-summary-wall" id="lifeSummaryWall"></div>
+        </section>
+
+        <section class="memory-photo-wall-section quiet-section" id="bookSectionPending" hidden>
+          <div class="memory-photo-wall-head">
+            <div>
+              <span class="page-kicker">正在成形</span>
+              <h3>聊天里刚提炼出的线索</h3>
+            </div>
+          </div>
+          <div class="memory-photo-wall memory-pending-wall" id="memoryPendingWall"></div>
+        </section>
+
+        <section class="person-detail-section quiet-section" id="memoryPersonDetail" hidden></section>
+
+        <section class="memory-photo-wall-section detail-section" id="memoryMapDetailSection" hidden>
+          <div class="memory-photo-wall-head">
+            <div>
+              <span class="page-kicker">继续往下翻</span>
+              <h3 id="memoryMapDetailTitle">这里放这一类里更细的内容</h3>
+            </div>
+          </div>
+          <div class="memory-scroll memory-map-scroll" id="memoryMapRoot"></div>
+        </section>
+      </section>
+    </section>
+  </main>
+</body>
+</html>
