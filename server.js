@@ -2,6 +2,11 @@ import express from 'express';
 import cors from 'cors';
 import axios from 'axios';
 import 'dotenv/config';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const nodejieba = require('nodejieba');
+const natural = require('natural');
 
 const app = express();
 app.use(cors());
@@ -11,6 +16,143 @@ const PORT = process.env.PORT || 3001;
 const MODEL_NAME = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
 const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY;
 const DEEPSEEK_URL = 'https://api.deepseek.com/v1/chat/completions';
+
+const eventSentenceClassifier = new natural.BayesClassifier();
+[
+  ['昨天我在给她写贺卡', 'event_sentence'],
+  ['今天朋友过生日，我去给她庆祝生日啦', 'event_sentence'],
+  ['昨天和老伴下棋', 'event_sentence'],
+  ['我刚刚和李阿姨通了电话', 'event_sentence'],
+  ['今天我做了红烧肉', 'event_sentence'],
+  ['清橙拿铁', 'answer_fragment'],
+  ['李阿姨', 'answer_fragment'],
+  ['昨天', 'answer_fragment'],
+  ['不是赵姐，是李阿姨', 'revision_fragment'],
+  ['哦不对，是今天写的贺卡', 'revision_fragment'],
+  ['没来得及存档，我看不到卡片整理', 'meta_conversation'],
+  ['这个版本有时候会闪退', 'meta_conversation'],
+  ['你好啊', 'non_event'],
+  ['嗯', 'non_event'],
+  ['对啊', 'non_event'],
+  ['我在听', 'non_event']
+].forEach(([text, label]) => eventSentenceClassifier.addDocument(text, label));
+eventSentenceClassifier.train();
+
+const VERB_TAG_PATTERN = /^(v|vn|vd|vi)$/;
+const NOUN_TAG_PATTERN = /^(n|nr|ns|nt|nz|vn|t)$/;
+const EVENT_STOP_WORDS = new Set(['我', '你', '她', '他', '它', '我们', '你们', '他们', '她们', '给', '在', '去', '了', '的', '啊', '呀', '啦', '呢']);
+
+function extractEventAnalysis(text = '') {
+  const value = String(text || '').trim();
+  if (!value) {
+    return {
+      utteranceType: 'non_event',
+      classifierScores: [],
+      tokens: [],
+      actions: [],
+      objects: [],
+      eventPhrases: [],
+      eventLikeScore: 0
+    };
+  }
+
+  const classifierScores = eventSentenceClassifier.getClassifications(value);
+  const topLabel = classifierScores[0]?.label || 'non_event';
+  const topScore = classifierScores[0]?.value || 0;
+  const taggedTokens = nodejieba.tag(value).map((item) => ({
+    word: String(item.word || '').trim(),
+    tag: String(item.tag || '').trim()
+  })).filter((item) => item.word);
+
+  const actions = [];
+  const objects = [];
+  const eventPhrases = [];
+
+  taggedTokens.forEach((token, index) => {
+    if (!VERB_TAG_PATTERN.test(token.tag)) return;
+    if (EVENT_STOP_WORDS.has(token.word)) return;
+    actions.push(token.word);
+
+    const nearbyObject = taggedTokens.slice(index + 1, index + 4).find((next) => (
+      next.word
+      && !EVENT_STOP_WORDS.has(next.word)
+      && NOUN_TAG_PATTERN.test(next.tag)
+    ));
+
+    if (nearbyObject) {
+      objects.push(nearbyObject.word);
+      eventPhrases.push(`${token.word}${nearbyObject.word}`);
+    } else {
+      eventPhrases.push(token.word);
+    }
+  });
+
+  const uniqueActions = Array.from(new Set(actions));
+  const uniqueObjects = Array.from(new Set(objects));
+  const uniquePhrases = Array.from(new Set(eventPhrases));
+  const structuralScore = Math.min(1, (
+    (uniqueActions.length ? 0.45 : 0)
+    + (uniqueObjects.length ? 0.25 : 0)
+    + (uniquePhrases.length ? 0.15 : 0)
+    + (/[今天昨天前天刚刚前几天上次那次]/.test(value) ? 0.1 : 0)
+  ));
+  const eventLikeScore = Math.max(topScore, structuralScore);
+
+  return {
+    utteranceType: topLabel,
+    classifierScores,
+    tokens: taggedTokens,
+    actions: uniqueActions,
+    objects: uniqueObjects,
+    eventPhrases: uniquePhrases,
+    eventLikeScore
+  };
+}
+
+function getLastAssistantQuestion(history = []) {
+  const list = Array.isArray(history) ? [...history].reverse() : [];
+  const lastAssistant = list.find((item) => item.role === 'assistant' && String(item.content || '').trim());
+  return String(lastAssistant?.content || '').trim();
+}
+
+function inferQuestionSlot(questionText = '') {
+  const value = String(questionText || '').trim();
+  if (!value) return 'none';
+  if (/(哪种|什么口味|哪一款|哪杯|喜欢喝什么|喜欢哪种)/.test(value)) return 'preference';
+  if (/(谁|哪位|哪个人|叫什么)/.test(value)) return 'person';
+  if (/(什么时候|几点|哪天|上午还是晚上)/.test(value)) return 'time';
+  if (/(做什么|干什么|去做什么|去干嘛|是什么事)/.test(value)) return 'action';
+  if (/(哪里|哪儿|在哪|去哪里)/.test(value)) return 'location';
+  return 'none';
+}
+
+function interpretShortTurn(text = '', history = [], activeEvent = null) {
+  const value = String(text || '').trim();
+  const lastAssistantQuestion = getLastAssistantQuestion(history);
+  const slot = inferQuestionSlot(lastAssistantQuestion);
+  if (!value) {
+    return { fragmentType: 'empty', targetSlot: 'none', resolvedValue: '', confidence: 0 };
+  }
+  if (/^(你好|您好|在吗|在嘛|哈喽|嗨|早上好|晚上好|中午好|晚安|拜拜|再见)[！!。.]?$/i.test(value)) {
+    return { fragmentType: 'greeting', targetSlot: 'none', resolvedValue: value, confidence: 1 };
+  }
+  if (/没来得及存档|没存档|看不到.*卡片整理|看不到.*忆光|点了.*忆光|没保存|稍后看|闪退|版本|稳定性/.test(value)) {
+    return { fragmentType: 'meta_conversation', targetSlot: 'none', resolvedValue: value, confidence: 1 };
+  }
+  if (/^(不是|不是这个意思|你没听懂|你理解错了|我不是这个意思|不是这句|不是说这个|你又理解偏了|不是今天，是昨天|那是昨天的|不是赵姐|不是李阿姨|不是这次，是上次|我刚刚说错了)/.test(value)) {
+    return { fragmentType: 'revision_fragment', targetSlot: slot, resolvedValue: value, confidence: 0.95 };
+  }
+  if (/^(嗯|嗯嗯|哦|啊|欸|哎|好|好的|行|行吧|对|对啊|对呢|是啊|没事|还好|一般吧|算了|随便|哈哈|呵呵)[！!。.]?$/i.test(value)) {
+    return { fragmentType: 'backchannel', targetSlot: 'none', resolvedValue: value, confidence: 0.96 };
+  }
+  if (lastAssistantQuestion && slot !== 'none' && value.length <= 16 && !/[，。！？!?]/.test(value)) {
+    return { fragmentType: 'answer_to_question', targetSlot: slot, resolvedValue: value, confidence: 0.9 };
+  }
+  if (activeEvent?.summary && value.length <= 12 && !/[，。！？!?]/.test(value)) {
+    return { fragmentType: 'event_follow_up', targetSlot: 'none', resolvedValue: value, confidence: 0.75 };
+  }
+  return { fragmentType: 'full_sentence', targetSlot: slot, resolvedValue: value, confidence: 0.5 };
+}
 
 function extractJsonBlock(content) {
   const text = String(content || '').trim();
@@ -100,22 +242,68 @@ function normalizeReplyPlan(data = {}) {
     memorySignal: Boolean(data.memorySignal),
     reason: String(data.reason || '').trim(),
     shouldAsk: Boolean(data.shouldAsk),
-    suggestedQuestion: String(data.suggestedQuestion || '').trim()
+    suggestedQuestion: String(data.suggestedQuestion || '').trim(),
+    isMetaConversation: Boolean(data.isMetaConversation),
+    correctionType: ['none', 'time', 'entity', 'scope'].includes(String(data.correctionType || '').trim()) ? String(data.correctionType || '').trim() : 'none',
+    shouldAvoidMemoryRecall: Boolean(data.shouldAvoidMemoryRecall),
+    timeAnchorLabel: String(data.timeAnchorLabel || '').trim(),
+    resolvedRelativeTime: String(data.resolvedRelativeTime || '').trim(),
+    timeRef: data.timeRef && typeof data.timeRef === 'object' ? {
+      rawText: String(data.timeRef.rawText || '').trim(),
+      normalizedLabel: String(data.timeRef.normalizedLabel || '').trim(),
+      timeType: String(data.timeRef.timeType || '').trim(),
+      resolvedDate: String(data.timeRef.resolvedDate || '').trim(),
+      lifeStageLabel: String(data.timeRef.lifeStageLabel || '').trim(),
+      confidence: Math.max(0, Math.min(1, Number(data.timeRef.confidence || 0) || 0)),
+      anchorSource: String(data.timeRef.anchorSource || '').trim()
+    } : null,
+    timeConfidence: Math.max(0, Math.min(1, Number(data.timeConfidence || 0) || 0)),
+    hasTimeConflict: Boolean(data.hasTimeConflict),
+    conflictDetected: Boolean(data.conflictDetected),
+    revisionNeeded: Boolean(data.revisionNeeded),
+    replyTimeStrategy: ['use_resolved_time', 'use_relative_label_only', 'acknowledge_uncertainty', 'revise_active_event_time', 'no_time_anchor'].includes(String(data.replyTimeStrategy || '').trim())
+      ? String(data.replyTimeStrategy || '').trim()
+      : 'no_time_anchor',
+    eventLinkAction: ['create_new_event', 'attach_to_existing_event', 'revise_existing_event', 'uncertain'].includes(String(data.eventLinkAction || '').trim())
+      ? String(data.eventLinkAction || '').trim()
+      : 'uncertain',
+    hasEntityConflict: Boolean(data.hasEntityConflict),
+    isActiveEventFollowUp: Boolean(data.isActiveEventFollowUp),
+    needsConfirmation: Boolean(data.needsConfirmation),
+    confirmationPrompt: String(data.confirmationPrompt || '').trim(),
+    consistencyWarnings: sanitizeStringList(data.consistencyWarnings, 3),
+    replyStrategy: ['small_talk', 'gentle_acknowledgment', 'continue_event', 'clarify_time', 'clarify_entity', 'gently_probe', 'memory_recap', 'acknowledge_revision', 'state_uncertainty', 'avoid_memory_claim'].includes(String(data.replyStrategy || '').trim())
+      ? String(data.replyStrategy || '').trim()
+      : 'continue_event'
   };
 }
 
 function normalizeMemoryFilter(data = {}) {
+  const cleanedPeople = sanitizeStringList(data.people, 6).filter((name) => !/^(她|他|它|他们|她们|那位|这个人|那个人)$/.test(name));
   return {
     filteredText: String(data.filteredText || '').trim(),
     memorySignal: Boolean(data.memorySignal),
     candidateType: String(data.candidateType || '').trim(),
     confidence: Math.max(0, Math.min(1, Number(data.confidence || 0) || 0)),
-    people: sanitizeStringList(data.people, 6),
+    people: cleanedPeople,
     timeType: String(data.timeType || '').trim(),
+    timeRef: data.timeRef && typeof data.timeRef === 'object' ? {
+      rawText: String(data.timeRef.rawText || '').trim(),
+      normalizedLabel: String(data.timeRef.normalizedLabel || '').trim(),
+      timeType: String(data.timeRef.timeType || '').trim(),
+      resolvedDate: String(data.timeRef.resolvedDate || '').trim(),
+      lifeStageLabel: String(data.timeRef.lifeStageLabel || '').trim(),
+      confidence: Math.max(0, Math.min(1, Number(data.timeRef.confidence || 0) || 0)),
+      anchorSource: String(data.timeRef.anchorSource || '').trim()
+    } : null,
+    timeConfidence: Math.max(0, Math.min(1, Number(data.timeConfidence || 0) || 0)),
     isComplete: Boolean(data.isComplete),
     summary: String(data.summary || '').trim(),
     narrative: String(data.narrative || '').trim(),
-    missingPieces: sanitizeStringList(data.missingPieces, 4),
+    missingPieces: sanitizeStringList([
+      ...(Array.isArray(data.missingPieces) ? data.missingPieces : []),
+      ...((Array.isArray(data.people) && data.people.length && !cleanedPeople.length) ? ['人物待确认'] : [])
+    ], 4),
     followUpHint: String(data.followUpHint || '').trim(),
     noiseFiltered: sanitizeStringList(data.noiseFiltered, 8),
     reason: String(data.reason || '').trim()
@@ -593,6 +781,8 @@ app.post('/api/reply-plan', async (req, res) => {
       return;
     }
 
+    const eventAnalysis = extractEventAnalysis(text);
+    const shortTurnAnalysis = interpretShortTurn(text, history, retrieval?.activeEvent || null);
     const messages = [
       {
         role: 'system',
@@ -600,8 +790,26 @@ app.post('/api/reply-plan', async (req, res) => {
           '你是一个中文对话决策助手。',
           '请在正式回复用户前，先判断这一轮最合适的回应策略。',
           '不要编造事实，不要把用户短句扩写成回忆。',
-          '输出 JSON，字段必须包含：responseMode, selfJudgment, replyGoal, memorySignal, reason, shouldAsk, suggestedQuestion。',
+          '输出 JSON，字段必须包含：responseMode, selfJudgment, replyGoal, memorySignal, reason, shouldAsk, suggestedQuestion, isMetaConversation, correctionType, shouldAvoidMemoryRecall, timeAnchorLabel, resolvedRelativeTime, timeRef, timeConfidence, hasTimeConflict, conflictDetected, revisionNeeded, replyTimeStrategy, eventLinkAction, hasEntityConflict, isActiveEventFollowUp, needsConfirmation, confirmationPrompt, consistencyWarnings, replyStrategy。',
           'responseMode 只能是 small_talk, emotional_support, chatting, relationship_signal, memory_narrative, memory_capture 之一。',
+          'replyStrategy 只能是 small_talk, gentle_acknowledgment, continue_event, clarify_time, clarify_entity, gently_probe, memory_recap, acknowledge_revision, state_uncertainty, avoid_memory_claim 之一。',
+          'replyTimeStrategy 只能是 use_resolved_time, use_relative_label_only, acknowledge_uncertainty, revise_active_event_time, no_time_anchor 之一。',
+          'isMetaConversation: true 或 false，表示这一轮是不是在谈系统、产品状态、存档、卡片整理或理解偏差。',
+          'correctionType 只能是 none, time, entity, scope 之一。',
+          'shouldAvoidMemoryRecall: true 或 false。只要当前轮主要是元对话、产品问题、或纠正旧理解，就尽量 true。',
+          'timeAnchorLabel: 若当前轮出现了今天、昨天、前天等相对时间，写原始标签；否则留空。',
+          'resolvedRelativeTime: 若能根据输入中的相对时间和提供的 timeAnchor 解析出日期，就写 YYYY-MM-DD；否则留空。',
+          'timeRef: 对象，字段至少包含 rawText, normalizedLabel, timeType, resolvedDate, lifeStageLabel, confidence, anchorSource。',
+          'timeConfidence: 0 到 1 之间。',
+          'hasTimeConflict: true 或 false。用户在纠正时间时应为 true。',
+          'conflictDetected: true 或 false。若当前时间解释和 activeEvent 的时间不一致，应为 true。',
+          'revisionNeeded: true 或 false。若当前轮需要修正旧事件时间，应为 true。',
+          'eventLinkAction 只能是 create_new_event, attach_to_existing_event, revise_existing_event, uncertain 之一。',
+          'hasEntityConflict: true 或 false。用户在纠正人物时应为 true。',
+          'isActiveEventFollowUp: true 或 false。若 retrieval.activeEvent 已明确，而用户这一轮只是很短的补充词，如“广场舞”“舒服”“后来”，通常应为 true。',
+          'needsConfirmation: true 或 false。若人物、时间或事件归属仍不够确定，必须为 true。',
+          'confirmationPrompt: 若 needsConfirmation 为 true，写一句温和且具体的确认问句；否则留空。',
+          'consistencyWarnings: 若当前输入和 activeEvent 或 verifiedFacts 出现明显矛盾，写 0 到 3 条短句提醒；没有就空数组。',
           'selfJudgment: 一句话，写这轮你自己的判断，例如“这轮更适合接话，不适合追问”。',
           'replyGoal: 一句话，写这轮回复最该完成什么，例如“先接住情绪”“先顺着这个人聊一句”。',
           'memorySignal: true 或 false，表示这一轮是否值得进入“候选记忆线索”处理。只有当用户提供了相对明确、可沉淀的内容时才为 true。',
@@ -611,6 +819,18 @@ app.post('/api/reply-plan', async (req, res) => {
           '规则：寒暄、短回应、附和句，优先设为 small_talk 或 chatting；情绪明显时优先 emotional_support；提到人物但还不成段时优先 relationship_signal；成段往事才可用 memory_narrative。',
           '轻微吐槽、嫌烦、无语、说“别分析我”或纠正助手，不要直接判成 emotional_support，通常更适合 chatting。',
           '如果用户在纠正你，比如“你没听懂”“我不是这个意思”，优先设为 chatting，目标是收回理解、按字面重来。',
+          '如果用户提到没存档、看不到卡片整理、点了忆光没保存、稍后看、闪退、版本稳定性等内容，应判为 isMetaConversation=true，并设置 shouldAvoidMemoryRecall=true。',
+          '如果用户纠正时间，比如“不是今天，是昨天”“那是昨天的”，要设置 correctionType=time, hasTimeConflict=true, replyStrategy=acknowledge_revision。',
+          '如果 timeRef 是 小时候 或 上小学那几年 这类人生阶段，只能保守标注 lifeStageLabel，不要编具体年份。',
+          '如果用户纠正人物，比如“不是赵姐，是李阿姨”，要设置 correctionType=entity, hasEntityConflict=true, replyStrategy=acknowledge_revision。',
+          '如果 retrieval.verifiedFacts 里已有 verified 的人物或时间，而当前输入又出现不稳定冲突，但用户并未明确修正，优先 needsConfirmation=true。',
+          '如果 retrieval.activeEvent 已经包含人物、时间或动作，而当前输入只是短补充，应尽量设置 isActiveEventFollowUp=true，replyStrategy=continue_event。',
+          '如果当前轮证据不足，优先 state_uncertainty 或 avoid_memory_claim，不要主动召回旧生活事件。',
+          '还要参考 retrieval.eventAnalysis。它是本地中文分词/词性与轻量分类器给出的结构线索：utteranceType, actions, objects, eventPhrases, eventLikeScore。',
+          '若 eventAnalysis.utteranceType = event_sentence 或 eventLikeScore >= 0.55，应优先把这轮视为事件句，而不是普通闲聊。',
+          '若 eventAnalysis.utteranceType = revision_fragment，应优先检查是不是在修订旧事件。',
+          '若 eventAnalysis.utteranceType = answer_fragment，且当前句很短，应优先视为对上一轮问题的回答，而不是无意义短句。',
+          '还要参考 retrieval.shortTurnAnalysis。若 fragmentType = answer_to_question，应优先把当前句当成回答槽位值；若 fragmentType = backchannel，才可按附和句处理；若 fragmentType = event_follow_up，应优先接回当前事件。',
           '只提到一个人物名字，且没有形成可追溯片段时，可以是 relationship_signal，但 memorySignal 仍然可以是 false。',
           'memorySignal 的门槛要比 responseMode 更高。能顺着聊，不代表值得进入候选记忆池。',
           'shouldAsk 只有在补一个小问题明显能帮助理解当前片段时才为 true；寒暄、短句、轻吐槽、纠正场景一律尽量 false。',
@@ -622,7 +842,11 @@ app.post('/api/reply-plan', async (req, res) => {
         role: 'user',
         content: JSON.stringify({
           text,
-          retrieval,
+          retrieval: {
+            ...retrieval,
+            eventAnalysis,
+            shortTurnAnalysis
+          },
           history: Array.isArray(history) ? history.slice(-6) : []
         }, null, 2)
       }
@@ -672,6 +896,8 @@ app.post('/api/memory-filter', async (req, res) => {
       return;
     }
 
+    const eventAnalysis = extractEventAnalysis(text);
+    const shortTurnAnalysis = interpretShortTurn(text, history, retrieval?.activeEvent || null);
     const messages = [
       {
         role: 'system',
@@ -687,9 +913,12 @@ app.post('/api/memory-filter', async (req, res) => {
           '输出 JSON，字段必须包含：filteredText, memorySignal, candidateType, confidence, people, timeType, isComplete, summary, narrative, missingPieces, followUpHint, noiseFiltered, reason。',
           'candidateType 只能是 daily_fragment, person_clue, event_memory, timeline_memory, emotion_note, none 之一。',
           'confidence 是 0 到 1 之间的小数。',
-          'people 只保留明确人物称呼，不要把“和赵姐”写进去，要写成“赵姐”。',
+          'people 只保留明确人物称呼，不要把“和赵姐”写进去，要写成“赵姐”。绝对不要把“她”“他”“那位”这类代词当作人物实体输出。',
           'timeType 只能是 exact, relative, missing, present, none 之一。',
           'isComplete 表示这段内容是否已经足够成为一条相对完整的候选记忆。',
+          '如果内容是今天/昨天/前几天吃了什么、做了什么、去了一下哪里、见了谁、打了电话这类具体日常小事，优先判为 daily_fragment 或 event_memory，不要上升成 timeline_memory。',
+          '只有当输入明确指向“小时候、上小学那几年、年轻的时候、退休后、那几年”这类人生阶段时，才适合判为 timeline_memory。',
+          '绝对不要把两三条相邻日常小事，例如“今天吃了红烧肉，昨天吃了鸡蛋羹”整理成“人生阶段线”或“待补时间线”。',
           '只有当“想念、怀念、挂念”明确指向一个人或一段生活线索时，candidateType 才能是 emotion_note；普通烦躁、抱怨、吐槽不要进这个类型。',
           'summary 要写成一句自然短句，像“今天和赵姐一起看漫画，是一个刚发生的小片段”，不要分词罗列。',
           'narrative 要写成 50 到 90 字的一小段整理文字，像温和的记忆暂存卡片，只能根据已有事实整理，不要编造。',
@@ -697,6 +926,12 @@ app.post('/api/memory-filter', async (req, res) => {
           'followUpHint 是一句内部提示，不是直接质问用户；要非常克制，只有真的缺关键口子才写。轻吐槽、闲聊、纠正场景一律留空。',
           'filteredText 是去掉噪声后保留下来的有效内容；如果没有，就留空。',
           'reason 用一句话解释判断。',
+          '如果 retrieval.localSignals.isMetaConversation 为 true，或 replyPlan.shouldAvoidMemoryRecall 为 true，则 memorySignal 必须是 false。',
+          '如果当前轮主要是在纠正时间、人物、理解偏差，而没有新增稳定生活事实，则 memorySignal 必须是 false。',
+          '如果是在说没存档、看不到卡片整理、点了忆光没保存、稍后看、闪退、版本稳定性等产品状态问题，memorySignal 必须是 false。',
+          '还要参考 retrieval.eventAnalysis。若 utteranceType = event_sentence 或 eventLikeScore >= 0.55，应优先把这轮识别为事件片段候选；若 actions 和 objects 同时存在，优先抽取动作短语，不要只靠人工关键词。',
+          '若 utteranceType = answer_fragment，除非它明确补齐了上一轮事件的关键槽位，否则不要直接升为候选记忆。',
+          '还要参考 retrieval.shortTurnAnalysis。若 fragmentType = answer_to_question，只有当它补齐的是人物、时间、动作、地点这类事件关键槽位时，才可帮助当前事件；不要把所有短答案直接升格为记忆。',
           '不要输出 markdown，不要解释。'
         ].join('\n')
       },
@@ -705,7 +940,11 @@ app.post('/api/memory-filter', async (req, res) => {
         content: JSON.stringify({
           text,
           history: Array.isArray(history) ? history.slice(-8) : [],
-          retrieval,
+          retrieval: {
+            ...retrieval,
+            eventAnalysis,
+            shortTurnAnalysis
+          },
           replyPlan
         }, null, 2)
       }

@@ -7,7 +7,12 @@ const STORAGE_KEYS = {
   memoryCues: 'life_book_memory_cues_v1',
   strategyTrail: 'life_book_strategy_trail_v1',
   memoryCandidates: 'life_book_memory_candidates_v1',
-  lifeSummaries: 'life_book_life_summaries_v1'
+  lifeSummaries: 'life_book_life_summaries_v1',
+  activeEventContext: 'life_book_active_event_context_v1',
+  revisionLogs: 'life_book_revision_logs_v1',
+  localFacts: 'life_book_local_facts_v1',
+  factDatabase: 'life_book_fact_database_v1',
+  personAliases: 'life_book_person_aliases_v1'
 };
 
 const DEFAULT_PROFILE = {
@@ -48,6 +53,12 @@ const LIVE2D_TUNE = {
 };
 
 const LOCAL_EMBEDDING_DIM = 128;
+
+const META_CONVERSATION_PATTERNS = [
+  { type: 'product_state', pattern: /没来得及存档|没存档|点了.*忆光|没保存|稍后看|看不到.*忆光|看不到.*卡片整理|等待整理/ },
+  { type: 'stability_feedback', pattern: /闪退|版本|稳定性/ },
+  { type: 'understanding_repair', pattern: /你没听懂|我不是这个意思|理解偏了|你理解错了/ }
+];
 
 const SEED_MEMORIES = [];
 
@@ -131,6 +142,17 @@ function uniqueStrings(list = [], limit = 8) {
       .map((item) => String(item || '').trim())
       .filter(Boolean)
   )).slice(0, limit);
+}
+
+function normalizePersonLabel(name = '') {
+  return String(name || '')
+    .trim()
+    .replace(/[“”"'‘’「」『』]/g, '')
+    .replace(/\s+/g, '');
+}
+
+function buildCanonicalPersonId(name = '') {
+  return normalizePersonLabel(name).toLowerCase();
 }
 
 function summarizeTopTerms(list = [], limit = 3) {
@@ -249,19 +271,18 @@ function normalizePeople(list = []) {
   const blocked = new Set(['大家', '有人', '别人', '一个人', '那个人', '这个人', '医生', '老师', '同学', '朋友', '家人', '孩子们']);
   const suffixPattern = /(姐|姨|叔|伯|哥|嫂|婶|老师|主任|医生|奶奶|爷爷|外婆|外公|爱人|老伴|同学|师傅)$/;
   const leadingNoise = /^[想起去来看找跟和与把被给叫问聊说听喜欢总老又会常]/;
-  const getCanonicalPersonId = (name) => String(name || '').trim().replace(/\s+/g, '').toLowerCase();
   const canonicalizePersonName = (name) => {
     let value = String(name || '').trim().replace(/^(和|跟|与)/, '');
     while (value.length >= 3 && leadingNoise.test(value) && suffixPattern.test(value.slice(1))) {
       value = value.slice(1);
     }
-    return value;
+    return normalizePersonLabel(resolveCanonicalPersonName(value));
   };
   if (!Array.isArray(list)) return [];
   return uniquePeople(list
     .map((item) => ({
       name: canonicalizePersonName(item?.name || ''),
-      personId: getCanonicalPersonId(canonicalizePersonName(item?.name || '')),
+      personId: buildCanonicalPersonId(canonicalizePersonName(item?.name || '')),
       relation: String(item?.relation || '').trim(),
       role: String(item?.role || '').trim()
     }))
@@ -293,8 +314,686 @@ function normalizeTimeType(type = '') {
 }
 
 function guessTimeRefs(text) {
-  const matches = String(text || '').match(/今天|今儿|刚才|刚刚|刚开始|这会儿|\d{4}年(?:\d{1,2}月(?:\d{1,2}[日号]?)?)?|\d{1,2}月\d{1,2}[日号]?|\d+岁(?:那年|的时候)?|上小学|上初中|上高中|大学时候|工作后|结婚后|退休后/g) || [];
+  const matches = String(text || '').match(/今天|今儿|昨天|前天|大前天|明天|后天|刚才|刚刚|刚开始|这会儿|最近|前几天|前两天|前三天|上次|那次|那会儿|这周[一二三四五六日天]|本周[一二三四五六日天]|上周[一二三四五六日天]|下周[一二三四五六日天]|每周[一二三四五六日天]|\d{4}年(?:\d{1,2}月(?:\d{1,2}[日号]?)?)?|\d{1,2}月\d{1,2}[日号]?|\d+岁(?:那年|的时候)?|小时候|上小学|上初中|上高中|大学时候|工作后|结婚后|退休后/g) || [];
   return uniqueStrings(matches, 6);
+}
+
+function buildTimeAnchor() {
+  const now = new Date();
+  const formatDate = (date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+  const shift = (days) => {
+    const next = new Date(now);
+    next.setDate(now.getDate() + days);
+    return formatDate(next);
+  };
+  return {
+    currentDate: formatDate(now),
+    currentDateTime: now.toISOString(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
+    yesterday: shift(-1),
+    dayBeforeYesterday: shift(-2),
+    threeDaysAgo: shift(-3),
+    tomorrow: shift(1),
+    dayAfterTomorrow: shift(2)
+  };
+}
+
+function isPronounPersonName(name) {
+  return /^(她|他|它|他们|她们|那位|这个人|那个人)$/.test(String(name || '').trim());
+}
+
+function normalizeAliasRecord(record = {}) {
+  const displayName = normalizePersonLabel(record.displayName || record.canonicalName || '');
+  const aliases = uniqueStrings([displayName, ...(record.aliases || [])].map(normalizePersonLabel), 12).filter(Boolean);
+  return {
+    canonicalId: String(record.canonicalId || buildCanonicalPersonId(displayName)).trim(),
+    displayName,
+    aliases,
+    confidence: Math.max(0, Math.min(1, Number(record.confidence || 0) || 0)),
+    evidenceCount: Math.max(0, Number(record.evidenceCount || aliases.length || 0) || 0),
+    updatedAt: String(record.updatedAt || nowString()).trim()
+  };
+}
+
+function getPersonAliasRecords() {
+  return readStorage(STORAGE_KEYS.personAliases, []).map(normalizeAliasRecord).filter((item) => item.displayName);
+}
+
+function setPersonAliasRecords(items) {
+  writeStorage(STORAGE_KEYS.personAliases, items.map(normalizeAliasRecord));
+  rebuildFactDatabase();
+}
+
+function resolveCanonicalPersonName(name = '') {
+  const target = normalizePersonLabel(name);
+  if (!target) return '';
+  const match = getPersonAliasRecords().find((item) => item.aliases.includes(target) || item.canonicalId === buildCanonicalPersonId(target));
+  return match?.displayName || target;
+}
+
+function buildAliasLookup() {
+  const lookup = new Map();
+  getPersonAliasRecords().forEach((item) => {
+    item.aliases.forEach((alias) => lookup.set(alias, item.displayName));
+    lookup.set(item.displayName, item.displayName);
+  });
+  return lookup;
+}
+
+function extractQuotedNames(text = '') {
+  return Array.from(String(text || '').matchAll(/[“"「『]([^”"」』]{1,12})[”"」』]/g)).map((item) => normalizePersonLabel(item[1]));
+}
+
+function extractNamedAliasCandidates(text = '') {
+  const value = String(text || '').trim();
+  const directPeople = guessPeopleFromText(value).map((item) => item.name);
+  const quoted = extractQuotedNames(value);
+  const namedByVerb = Array.from(value.matchAll(/(?:叫|叫做|备注(?:为)?|改叫|称呼(?:为)?)([^，。！？!?、\s]{1,12})/g)).map((item) => normalizePersonLabel(item[1]));
+  const candidates = uniqueStrings([...directPeople, ...quoted, ...namedByVerb].map(normalizePersonLabel), 8).filter(Boolean);
+  return candidates.filter((item) => !isPronounPersonName(item));
+}
+
+function extractAliasMerge(text = '', retrieval = {}) {
+  const value = String(text || '').trim();
+  if (!value) return null;
+  const explicitPeople = (retrieval?.queryFeatures?.explicitPeople || []).map(resolveCanonicalPersonName).filter(Boolean);
+  const aliasCandidates = extractNamedAliasCandidates(value);
+  const parts = value.split(/就是|是同一个人|其实就是/);
+  if (parts.length >= 2) {
+    const leftNames = uniqueStrings([
+      ...extractNamedAliasCandidates(parts[0]),
+      ...explicitPeople.filter((name) => parts[0].includes(name))
+    ], 4);
+    const rightNames = uniqueStrings([
+      ...extractNamedAliasCandidates(parts[1]),
+      ...explicitPeople.filter((name) => parts[1].includes(name))
+    ], 4);
+    const left = leftNames[0];
+    const right = rightNames[0];
+    if (left && right && left !== right) {
+      return {
+        displayName: right,
+        aliases: [left, right],
+        reason: 'explicit_alias_equivalence'
+      };
+    }
+  }
+
+  if (/(叫|备注(?:为)?|改叫|称呼(?:为)?)/.test(value) && aliasCandidates.length >= 2) {
+    const preferred = aliasCandidates[aliasCandidates.length - 1];
+    return {
+      displayName: preferred,
+      aliases: aliasCandidates,
+      reason: 'explicit_alias_preference'
+    };
+  }
+
+  return null;
+}
+
+function rewritePersonReferences(preferredName, aliases = []) {
+  const canonicalName = normalizePersonLabel(preferredName);
+  const aliasSet = new Set(uniqueStrings([canonicalName, ...aliases].map(normalizePersonLabel), 20).filter(Boolean));
+  if (!canonicalName || aliasSet.size < 2) return;
+
+  const rewriteName = (name) => aliasSet.has(normalizePersonLabel(name)) ? canonicalName : name;
+
+  const memories = getMemories().map((memory) => normalizeMemory({
+    ...memory,
+    people: (memory.people || []).map((person) => ({
+      ...person,
+      name: rewriteName(person.name),
+      personId: buildCanonicalPersonId(canonicalName)
+    }))
+  }));
+  setMemories(memories);
+
+  const candidates = getMemoryCandidates().map((candidate) => normalizeMemoryCandidate({
+    ...candidate,
+    people: (candidate.people || []).map(rewriteName),
+    summary: aliases.reduce((text, alias) => String(text || '').replaceAll(alias, canonicalName), candidate.summary || ''),
+    narrative: aliases.reduce((text, alias) => String(text || '').replaceAll(alias, canonicalName), candidate.narrative || ''),
+    filteredText: aliases.reduce((text, alias) => String(text || '').replaceAll(alias, canonicalName), candidate.filteredText || '')
+  }));
+  setMemoryCandidates(candidates);
+
+  const activeEvent = getActiveEventContext();
+  if (activeEvent?.people?.some((name) => aliasSet.has(normalizePersonLabel(name)))) {
+    setActiveEventContext({
+      ...activeEvent,
+      people: uniqueStrings((activeEvent.people || []).map(rewriteName), 4)
+    });
+  }
+}
+
+function mergePersonAliases(preferredName, aliases = [], confidence = 0.94) {
+  const canonicalName = normalizePersonLabel(preferredName);
+  const normalizedAliases = uniqueStrings([canonicalName, ...aliases].map(normalizePersonLabel), 12).filter(Boolean);
+  if (!canonicalName || normalizedAliases.length < 2) return null;
+
+  const existing = getPersonAliasRecords();
+  const related = existing.filter((item) => item.aliases.some((alias) => normalizedAliases.includes(alias)) || item.displayName === canonicalName);
+  const mergedRecord = normalizeAliasRecord({
+    canonicalId: buildCanonicalPersonId(canonicalName),
+    displayName: canonicalName,
+    aliases: uniqueStrings([
+      canonicalName,
+      ...normalizedAliases,
+      ...related.flatMap((item) => item.aliases)
+    ], 12),
+    confidence: Math.max(confidence, ...related.map((item) => item.confidence || 0), 0.9),
+    evidenceCount: normalizedAliases.length + related.reduce((sum, item) => sum + (item.evidenceCount || item.aliases.length || 1), 0),
+    updatedAt: nowString()
+  });
+
+  setPersonAliasRecords([mergedRecord, ...existing.filter((item) => !related.includes(item))]);
+  rewritePersonReferences(mergedRecord.displayName, mergedRecord.aliases);
+  return mergedRecord;
+}
+
+function backfillRecentCandidatesFromActiveEvent(event = getActiveEventContext()) {
+  if (!event?.summary) return;
+  const candidates = getMemoryCandidates();
+  let changed = false;
+  const nextCandidates = candidates.map((candidate) => {
+    if (candidate.dismissed || !candidate.memorySignal) return candidate;
+    const candidateTime = normalizeTimeRef(candidate.timeRef);
+    const candidateMatchesEvent = candidate.eventKey === event.id
+      || ((candidateTime.normalizedLabel && event.timeLabel && candidateTime.normalizedLabel === event.timeLabel)
+        && (candidate.people.length === 0 || candidate.people.some((name) => (event.people || []).includes(resolveCanonicalPersonName(name)))));
+    if (!candidateMatchesEvent) return candidate;
+
+    const mergedPeople = uniqueStrings([...(candidate.people || []), ...(event.people || [])].map(resolveCanonicalPersonName), 6);
+    const merged = normalizeMemoryCandidate({
+      ...candidate,
+      eventKey: event.id,
+      people: mergedPeople,
+      timeRef: candidateTime.normalizedLabel ? candidate.timeRef : (event.timeRef || candidate.timeRef),
+      timeConfidence: Math.max(candidate.timeConfidence || 0, event.timeRef?.confidence || 0),
+      missingPieces: (candidate.missingPieces || []).filter((item) => !(mergedPeople.length && (item === '人物' || item === '人物待确认')))
+    });
+    if (JSON.stringify(merged) !== JSON.stringify(candidate)) {
+      changed = true;
+    }
+    return merged;
+  });
+  if (changed) {
+    setMemoryCandidates(nextCandidates);
+  }
+}
+
+function detectMetaConversationType(text) {
+  const value = String(text || '').trim();
+  const matched = META_CONVERSATION_PATTERNS.find((item) => item.pattern.test(value));
+  return matched ? matched.type : 'none';
+}
+
+function resolveRelativeWeekday(label, anchor = buildTimeAnchor()) {
+  const match = String(label || '').match(/^(这周|本周|上周|下周)([一二三四五六日天])$/);
+  if (!match) return '';
+  const prefix = match[1];
+  const weekdayChar = match[2];
+  const weekdayMap = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 7, '天': 7 };
+  const targetWeekday = weekdayMap[weekdayChar];
+  const now = new Date(anchor.currentDateTime || Date.now());
+  const currentWeekday = now.getDay() === 0 ? 7 : now.getDay();
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - currentWeekday + 1);
+  const weekOffset = prefix === '上周' ? -7 : prefix === '下周' ? 7 : 0;
+  const target = new Date(monday);
+  target.setDate(monday.getDate() + weekOffset + targetWeekday - 1);
+  const year = target.getFullYear();
+  const month = String(target.getMonth() + 1).padStart(2, '0');
+  const day = String(target.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function buildEmptyTimeRef() {
+  return {
+    rawText: '',
+    normalizedLabel: '',
+    timeType: 'none',
+    resolvedDate: '',
+    lifeStageLabel: '',
+    confidence: 0,
+    anchorSource: 'none'
+  };
+}
+
+function normalizeTimeRef(timeRef = null) {
+  if (!timeRef || typeof timeRef !== 'object') return buildEmptyTimeRef();
+  return {
+    rawText: String(timeRef.rawText || '').trim(),
+    normalizedLabel: String(timeRef.normalizedLabel || '').trim(),
+    timeType: String(timeRef.timeType || 'none').trim() || 'none',
+    resolvedDate: String(timeRef.resolvedDate || '').trim(),
+    lifeStageLabel: String(timeRef.lifeStageLabel || '').trim(),
+    confidence: Math.max(0, Math.min(1, Number(timeRef.confidence || 0) || 0)),
+    anchorSource: String(timeRef.anchorSource || 'none').trim() || 'none'
+  };
+}
+
+function inferTimeConfidence(label) {
+  const value = String(label || '').trim();
+  if (!value) return 0;
+  if (/今天|今儿|昨天|前天|大前天|明天|后天|刚刚|刚才|这会儿/.test(value)) return 0.96;
+  if (/这周|本周|上周|下周/.test(value)) return 0.88;
+  if (/前两天|前三天/.test(value)) return 0.82;
+  if (/最近|前几天|上次|那次|那会儿/.test(value)) return 0.58;
+  if (/小时候/.test(value)) return 0.72;
+  if (/上小学/.test(value)) return 0.7;
+  return 0.5;
+}
+
+function parseTimeRef(text, anchor = buildTimeAnchor()) {
+  const value = String(text || '').trim();
+  const matchedRefs = guessTimeRefs(value);
+  for (const ref of matchedRefs) {
+    if (/每周[一二三四五六日天]/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'recurring',
+        resolvedDate: '',
+        lifeStageLabel: '',
+        confidence: 0.78,
+        anchorSource: 'weekly_pattern'
+      };
+    }
+    if (/这周|本周|上周|下周/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'relative_weekday',
+        resolvedDate: resolveRelativeWeekday(ref, anchor),
+        lifeStageLabel: '',
+        confidence: inferTimeConfidence(ref),
+        anchorSource: 'relative_week'
+      };
+    }
+    if (/刚刚|刚才|这会儿/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'present',
+        resolvedDate: anchor.currentDate,
+        lifeStageLabel: '',
+        confidence: inferTimeConfidence(ref),
+        anchorSource: 'current_day'
+      };
+    }
+    if (/今天|今儿/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'present',
+        resolvedDate: anchor.currentDate,
+        lifeStageLabel: '',
+        confidence: inferTimeConfidence(ref),
+        anchorSource: 'current_day'
+      };
+    }
+    if (/昨天/.test(ref) && !/前天/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'relative_day',
+        resolvedDate: anchor.yesterday,
+        lifeStageLabel: '',
+        confidence: inferTimeConfidence(ref),
+        anchorSource: 'relative_day'
+      };
+    }
+    if (/前两天/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'relative_range',
+        resolvedDate: anchor.dayBeforeYesterday,
+        lifeStageLabel: '',
+        confidence: inferTimeConfidence(ref),
+        anchorSource: 'relative_range'
+      };
+    }
+    if (/前天/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'relative_day',
+        resolvedDate: anchor.dayBeforeYesterday,
+        lifeStageLabel: '',
+        confidence: inferTimeConfidence(ref),
+        anchorSource: 'relative_day'
+      };
+    }
+    if (/大前天|前三天/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'relative_day',
+        resolvedDate: anchor.threeDaysAgo,
+        lifeStageLabel: '',
+        confidence: inferTimeConfidence(ref),
+        anchorSource: 'relative_day'
+      };
+    }
+    if (/明天/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'relative_day',
+        resolvedDate: anchor.tomorrow,
+        lifeStageLabel: '',
+        confidence: inferTimeConfidence(ref),
+        anchorSource: 'relative_day'
+      };
+    }
+    if (/后天/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'relative_day',
+        resolvedDate: anchor.dayAfterTomorrow,
+        lifeStageLabel: '',
+        confidence: inferTimeConfidence(ref),
+        anchorSource: 'relative_day'
+      };
+    }
+    if (/最近|前几天|上次|那次|那会儿/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'relative_fuzzy',
+        resolvedDate: '',
+        lifeStageLabel: '',
+        confidence: inferTimeConfidence(ref),
+        anchorSource: 'fuzzy_relative'
+      };
+    }
+    if (/小时候/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'life_stage',
+        resolvedDate: '',
+        lifeStageLabel: '小时候',
+        confidence: inferTimeConfidence(ref),
+        anchorSource: 'life_stage'
+      };
+    }
+    if (/上小学/.test(ref)) {
+      return {
+        rawText: ref,
+        normalizedLabel: ref,
+        timeType: 'life_stage',
+        resolvedDate: '',
+        lifeStageLabel: '上小学那几年',
+        confidence: inferTimeConfidence(ref),
+        anchorSource: 'life_stage'
+      };
+    }
+  }
+  return buildEmptyTimeRef();
+}
+
+function detectResolvedRelativeTime(text, anchor = buildTimeAnchor()) {
+  const timeRef = parseTimeRef(text, anchor);
+  return { label: timeRef.normalizedLabel, resolvedDate: timeRef.resolvedDate };
+}
+
+function detectTimeConflictWithActiveEvent(timeRef, activeEvent = null) {
+  if (!activeEvent?.timeLabel || !timeRef?.normalizedLabel) return false;
+  if (activeEvent.timeLabel === timeRef.normalizedLabel) return false;
+  if (activeEvent.resolvedDate && timeRef.resolvedDate) {
+    return activeEvent.resolvedDate !== timeRef.resolvedDate;
+  }
+  return true;
+}
+
+function buildReplyTimeStrategy({ timeRef, correctionType = 'none', conflictDetected = false }) {
+  if (correctionType === 'time') return 'revise_active_event_time';
+  if (!timeRef?.normalizedLabel) return 'no_time_anchor';
+  if (timeRef.timeType === 'life_stage' || timeRef.timeType === 'relative_fuzzy' || timeRef.timeType === 'recurring') return 'use_relative_label_only';
+  if (conflictDetected) return 'acknowledge_uncertainty';
+  if (timeRef.resolvedDate && timeRef.confidence >= 0.8) return 'use_resolved_time';
+  return 'use_relative_label_only';
+}
+
+function detectTurnSignals(text, retrieval = {}) {
+  const value = String(text || '').trim();
+  const anchor = buildTimeAnchor();
+  const timeRef = parseTimeRef(value, anchor);
+  const explicitPeople = retrieval?.queryFeatures?.explicitPeople || buildQueryFeatures(value).explicitPeople || [];
+  const activeEvent = retrieval?.activeEvent || getActiveEventContext();
+  const metaConversationType = detectMetaConversationType(value);
+  const metaConversation = isMetaConversation(value) || metaConversationType !== 'none';
+  const hasTimeRef = guessTimeRefs(value).some((item) => /今天|今儿|昨天|前天|大前天|明天|后天|刚刚|刚才|前几天|前两天|前三天|这周|本周|上周|下周|每周/.test(item));
+  const correctionType = /不是.*(姐|姨|老师|医生)|不是赵姐|不是李阿姨/.test(value)
+      ? 'entity'
+      : (
+        /不是.*(?:今天|今儿|昨天|前天|大前天|明天|后天|刚刚|刚才|前几天|前两天|前三天|这周[一二三四五六日天]|本周[一二三四五六日天]|上周[一二三四五六日天]|下周[一二三四五六日天]|每周[一二三四五六日天])|那是(?:今天|今儿|昨天|前天|大前天|明天|后天|刚刚|刚才|前几天|前两天|前三天)的?|不是今天，是昨天|不对.*(?:今天|今儿|昨天|前天|大前天|明天|后天|刚刚|刚才|前几天|前两天|前三天|这周[一二三四五六日天]|本周[一二三四五六日天]|上周[一二三四五六日天]|下周[一二三四五六日天]|每周[一二三四五六日天])|记错了.*(?:今天|今儿|昨天|前天|大前天|明天|后天|刚刚|刚才|前几天|前两天|前三天|这周[一二三四五六日天]|本周[一二三四五六日天]|上周[一二三四五六日天]|下周[一二三四五六日天]|每周[一二三四五六日天])|说错了.*(?:今天|今儿|昨天|前天|大前天|明天|后天|刚刚|刚才|前几天|前两天|前三天|这周[一二三四五六日天]|本周[一二三四五六日天]|上周[一二三四五六日天]|下周[一二三四五六日天]|每周[一二三四五六日天])/.test(value)
+        || (/(不对|记错了|说错了|搞错了)/.test(value) && hasTimeRef)
+      )
+        ? 'time'
+      : /你没听懂|我不是这个意思|理解偏了|不是这次，是上次|我刚刚说错了/.test(value)
+        ? 'scope'
+        : 'none';
+  const hasTimeConflict = correctionType === 'time';
+  const hasEntityConflict = correctionType === 'entity';
+  const shouldAvoidMemoryRecall = metaConversation || correctionType !== 'none';
+  const unresolvedPronounPerson = !explicitPeople.length && /(她|他|那位|那个人)/.test(value);
+  const conflictDetected = correctionType === 'time' || detectTimeConflictWithActiveEvent(timeRef, activeEvent);
+  const revisionNeeded = correctionType === 'time' || (conflictDetected && Boolean(timeRef.normalizedLabel) && Boolean(activeEvent?.timeLabel));
+  const replyTimeStrategy = buildReplyTimeStrategy({ timeRef, correctionType, conflictDetected });
+  const replyStrategy = metaConversation
+    ? 'avoid_memory_claim'
+    : correctionType !== 'none'
+      ? 'acknowledge_revision'
+      : hasTimeConflict
+        ? 'clarify_time'
+        : 'continue_event';
+
+  return {
+    anchor,
+    metaConversation,
+    metaConversationType,
+    correctionType,
+    shouldAvoidMemoryRecall,
+    hasTimeConflict,
+    hasEntityConflict,
+    timeAnchorLabel: timeRef.normalizedLabel,
+    resolvedRelativeTime: timeRef.resolvedDate,
+    timeRef,
+    timeConfidence: timeRef.confidence,
+    conflictDetected,
+    revisionNeeded,
+    replyTimeStrategy,
+    unresolvedPronounPerson,
+    explicitPeople,
+    isActiveEventFollowUp: detectActiveEventFollowUp(value, retrieval, activeEvent)
+  };
+}
+
+function resolvePeopleForTurn(text, retrieval = {}, replyPlan = {}) {
+  const value = String(text || '').trim();
+  const activeEvent = retrieval?.activeEvent || getActiveEventContext();
+  const explicitPeople = normalizePeople(((retrieval?.queryFeatures?.explicitPeople || buildQueryFeatures(value).explicitPeople || []).map((name) => ({ name })))).map((item) => item.name);
+  if (explicitPeople.length) return explicitPeople;
+
+  const shortTurn = replyPlan?.shortTurnType ? replyPlan : interpretShortTurn(value, getLastAssistantText(), activeEvent);
+  if (shortTurn.targetSlot === 'person' && shortTurn.resolvedValue) {
+    const resolved = normalizePeople([{ name: shortTurn.resolvedValue }]).map((item) => item.name);
+    if (resolved.length) return resolved;
+  }
+
+  if (/(她|他|那位|那个人|这个人)/.test(value) && activeEvent?.people?.length) {
+    return normalizePeople((activeEvent.people || []).map((name) => ({ name }))).map((item) => item.name);
+  }
+
+  return [];
+}
+
+function deriveEventKey(text, retrieval = {}, replyPlan = {}, candidate = {}) {
+  const value = String(text || '').trim();
+  const activeEvent = retrieval?.activeEvent || getActiveEventContext();
+  const people = uniqueStrings([
+    ...(candidate.people || []),
+    ...resolvePeopleForTurn(value, retrieval, replyPlan)
+  ].map(resolveCanonicalPersonName), 4).filter(Boolean);
+  const timeRef = normalizeTimeRef(candidate.timeRef || replyPlan?.timeRef || detectTurnSignals(value, retrieval).timeRef);
+  const actions = uniqueStrings([
+    ...extractActionHints(value),
+    ...(candidate.summary ? extractActionHints(candidate.summary) : []),
+    ...(activeEvent?.summary && (replyPlan?.isActiveEventFollowUp || /(她|他|那位|那个人|这个人)/.test(value)) ? (activeEvent.actions || []) : [])
+  ], 4);
+
+  if (replyPlan?.isActiveEventFollowUp && activeEvent?.id) {
+    return activeEvent.id;
+  }
+  if (activeEvent?.summary && people.length && activeEvent.people?.some((name) => people.includes(resolveCanonicalPersonName(name)))) {
+    const sameTime = !timeRef.normalizedLabel || !activeEvent.timeLabel || timeRef.normalizedLabel === activeEvent.timeLabel;
+    const actionOverlap = !actions.length || actions.some((action) => (activeEvent.actions || []).includes(action));
+    if (sameTime || actionOverlap) return activeEvent.id;
+  }
+
+  const parts = [
+    timeRef.normalizedLabel || '',
+    people[0] || '',
+    actions[0] || ''
+  ].filter(Boolean);
+  if (parts.length >= 2) {
+    return `event:${parts.join('|')}`;
+  }
+  return '';
+}
+
+function buildConfirmationPrompt({ people = [], timeLabel = '', activeEvent = null, reason = '' } = {}) {
+  if (reason === 'ambiguous_person' && people.length >= 2) {
+    return `我先确认一下，你刚说的是${people.join('还是')}？`;
+  }
+  if (reason === 'pronoun_person') {
+    return '我先确认一下，你说的“她”是指哪位？';
+  }
+  if (reason === 'time_conflict' && activeEvent?.timeLabel && timeLabel) {
+    return `我先确认一下，这次是${timeLabel}，不是${activeEvent.timeLabel}，对吗？`;
+  }
+  if (reason === 'person_conflict' && activeEvent?.people?.[0] && people[0]) {
+    return `我先确认一下，这次说的是${people[0]}，不是${activeEvent.people[0]}，对吗？`;
+  }
+  return '';
+}
+
+function detectConsistencyWarnings(text, retrieval = {}, replyPlan = {}) {
+  const value = String(text || '').trim();
+  const activeEvent = retrieval?.activeEvent || getActiveEventContext();
+  const currentPeople = resolvePeopleForTurn(value, retrieval, replyPlan);
+  const currentTimeRef = normalizeTimeRef(replyPlan?.timeRef || detectTurnSignals(value, retrieval).timeRef);
+  const warnings = [];
+
+  if (activeEvent?.summary && (replyPlan?.isActiveEventFollowUp || /(她|他|那位|那个人|这个人)/.test(value))) {
+    if (currentPeople.length && activeEvent.people?.length) {
+      const currentId = buildCanonicalPersonId(currentPeople[0]);
+      const activeId = buildCanonicalPersonId(activeEvent.people[0]);
+      if (currentId && activeId && currentId !== activeId && replyPlan?.correctionType === 'none') {
+        warnings.push({
+          type: 'person_conflict',
+          message: `当前补充里的人物像是${currentPeople[0]}，但活跃事件里一直是${activeEvent.people[0]}。`,
+          prompt: buildConfirmationPrompt({ people: currentPeople, activeEvent, reason: 'person_conflict' })
+        });
+      }
+    }
+    if (currentTimeRef.normalizedLabel && activeEvent.timeLabel && currentTimeRef.normalizedLabel !== activeEvent.timeLabel && replyPlan?.correctionType === 'none') {
+      warnings.push({
+        type: 'time_conflict',
+        message: `当前补充里的时间像是${currentTimeRef.normalizedLabel}，但活跃事件时间是${activeEvent.timeLabel}。`,
+        prompt: buildConfirmationPrompt({ timeLabel: currentTimeRef.normalizedLabel, activeEvent, reason: 'time_conflict' })
+      });
+    }
+  }
+
+  return warnings;
+}
+
+function buildConfirmationDecision(text, retrieval = {}, basePlan = {}) {
+  const value = String(text || '').trim();
+  const activeEvent = retrieval?.activeEvent || getActiveEventContext();
+  const resolvedPeople = resolvePeopleForTurn(value, retrieval, basePlan);
+  const warnings = detectConsistencyWarnings(value, retrieval, basePlan);
+  const hasPronoun = /(她|他|那位|那个人|这个人)/.test(value);
+
+  if (warnings.length) {
+    return {
+      needsConfirmation: true,
+      confirmationPrompt: warnings[0].prompt,
+      consistencyWarnings: warnings.map((item) => item.message)
+    };
+  }
+
+  if (hasPronoun && !resolvedPeople.length && !activeEvent?.people?.length) {
+    return {
+      needsConfirmation: true,
+      confirmationPrompt: buildConfirmationPrompt({ reason: 'pronoun_person' }),
+      consistencyWarnings: []
+    };
+  }
+
+  if ((retrieval?.queryFeatures?.explicitPeople || []).length >= 2 && basePlan.correctionType === 'none') {
+    const people = normalizePeople((retrieval.queryFeatures.explicitPeople || []).map((name) => ({ name }))).map((item) => item.name);
+    return {
+      needsConfirmation: true,
+      confirmationPrompt: buildConfirmationPrompt({ people, reason: 'ambiguous_person' }),
+      consistencyWarnings: []
+    };
+  }
+
+  return {
+    needsConfirmation: false,
+    confirmationPrompt: '',
+    consistencyWarnings: []
+  };
+}
+
+function postProcessMemoryCandidate(candidate, text, retrieval = {}, replyPlan = {}) {
+  const normalized = normalizeMemoryCandidate(candidate);
+  const signals = detectTurnSignals(text, retrieval);
+  const distinctRelativeTimeRefs = getDistinctRelativeTimeRefs(text);
+  const cleanedPeople = normalized.people.filter((name) => !isPronounPersonName(name));
+  const shouldDropForMeta = replyPlan.isMetaConversation || signals.metaConversation || replyPlan.shouldAvoidMemoryRecall;
+  const onlyCorrection = (signals.correctionType !== 'none' || isCorrectionLike(text)) && !cleanedPeople.length && !(retrieval?.queryFeatures?.timeRefs || []).length;
+  const hasMultiTimeFragments = distinctRelativeTimeRefs.length >= 2 && ['daily_fragment', 'event_memory', 'timeline_memory'].includes(normalized.candidateType);
+  const next = {
+    ...normalized,
+    people: cleanedPeople,
+    missingPieces: uniqueStrings([
+      ...normalized.missingPieces,
+      ...(normalized.people.length && !cleanedPeople.length ? ['人物待确认'] : [])
+    ], 4)
+  };
+
+  if (shouldDropForMeta || onlyCorrection || hasMultiTimeFragments) {
+    return normalizeMemoryCandidate({
+      ...next,
+      filteredText: '',
+      memorySignal: false,
+      candidateType: 'none',
+      confidence: 0.05,
+      summary: '',
+      narrative: '',
+      followUpHint: '',
+      reason: shouldDropForMeta
+        ? '这轮是元对话或产品状态问题，不进入候选记忆。'
+        : onlyCorrection
+          ? '这轮主要是在纠正理解，不单独进入候选记忆。'
+          : '这轮同时提到多个时间片段，先不自动压成单张草稿卡。'
+    });
+  }
+
+  return normalizeMemoryCandidate(next);
 }
 
 function normalizeMemoryCandidate(candidate = {}) {
@@ -307,6 +1006,15 @@ function normalizeMemoryCandidate(candidate = {}) {
   const missingPieces = uniqueStrings(candidate.missingPieces || [], 4);
   const reason = String(candidate.reason || '').trim();
   const confidence = Math.max(0, Math.min(1, Number(candidate.confidence || 0) || 0));
+  const timeRef = normalizeTimeRef(candidate.timeRef);
+  const timeConfidence = Math.max(0, Math.min(1, Number(candidate.timeConfidence || timeRef.confidence || 0) || 0));
+  const fallbackEventKey = (() => {
+    const timeLabel = timeRef.normalizedLabel || '';
+    const leadPerson = people[0] || '';
+    const action = extractActionHints([summary, filteredText].filter(Boolean).join(' '))[0] || '';
+    return timeLabel && (leadPerson || action) ? `event:${[timeLabel, leadPerson || action, action].filter(Boolean).join('|')}` : '';
+  })();
+  const eventKey = String(candidate.eventKey || fallbackEventKey || '').trim();
 
   return {
     id: String(candidate.id || uid('candidate')).trim(),
@@ -320,6 +1028,9 @@ function normalizeMemoryCandidate(candidate = {}) {
     memorySignal: Boolean(candidate.memorySignal),
     candidateType: normalizeCandidateType(candidate.candidateType),
     timeType: normalizeTimeType(candidate.timeType),
+    timeRef,
+    timeConfidence,
+    eventKey,
     isComplete: Boolean(candidate.isComplete),
     confidence,
     missingPieces,
@@ -327,6 +1038,544 @@ function normalizeMemoryCandidate(candidate = {}) {
     reason,
     dismissed: Boolean(candidate.dismissed)
   };
+}
+
+function normalizeActiveEventContext(event = {}) {
+  const people = normalizePeople((event.people || []).map((name) => ({ name }))).map((item) => item.name);
+  const actions = uniqueStrings(event.actions || [], 4);
+  const timeRef = normalizeTimeRef(event.timeRef);
+  return {
+    id: String(event.id || uid('active-event')).trim(),
+    eventType: String(event.eventType || 'daily_event').trim() || 'daily_event',
+    status: ['tentative', 'active', 'confirmed', 'revised'].includes(String(event.status || '').trim())
+      ? String(event.status || '').trim()
+      : 'tentative',
+    linkAction: ['create_new_event', 'attach_to_existing_event', 'revise_existing_event', 'uncertain'].includes(String(event.linkAction || '').trim())
+      ? String(event.linkAction || '').trim()
+      : 'uncertain',
+    people,
+    actions,
+    timeLabel: String(event.timeLabel || '').trim(),
+    resolvedDate: String(event.resolvedDate || '').trim(),
+    timeRef,
+    summary: String(event.summary || '').trim(),
+    lastUserText: String(event.lastUserText || '').trim(),
+    sourceTurnId: String(event.sourceTurnId || '').trim(),
+    lastUpdatedAt: String(event.lastUpdatedAt || nowString()).trim(),
+    confidence: Math.max(0, Math.min(1, Number(event.confidence || 0) || 0))
+  };
+}
+
+function getActiveEventContext() {
+  const raw = readStorage(STORAGE_KEYS.activeEventContext, null);
+  if (!raw) return null;
+  const normalized = normalizeActiveEventContext(raw);
+  return normalized.summary || normalized.people.length || normalized.actions.length || normalized.timeLabel
+    ? normalized
+    : null;
+}
+
+function setActiveEventContext(event) {
+  if (!event) {
+    localStorage.removeItem(STORAGE_KEYS.activeEventContext);
+    rebuildFactDatabase();
+    return;
+  }
+  writeStorage(STORAGE_KEYS.activeEventContext, normalizeActiveEventContext(event));
+  rebuildFactDatabase();
+}
+
+function getRevisionLogs() {
+  return readStorage(STORAGE_KEYS.revisionLogs, []);
+}
+
+function setRevisionLogs(items) {
+  writeStorage(STORAGE_KEYS.revisionLogs, items.slice(0, 40));
+  rebuildFactDatabase();
+}
+
+function appendRevisionLog(entry = {}) {
+  const next = [
+    {
+      revisionId: String(entry.revisionId || uid('rev')).trim(),
+      targetEventId: String(entry.targetEventId || '').trim(),
+      revisionType: String(entry.revisionType || '').trim(),
+      field: String(entry.field || '').trim(),
+      oldValue: entry.oldValue ?? '',
+      newValue: entry.newValue ?? '',
+      reason: String(entry.reason || 'user_explicit_correction').trim(),
+      sourceTurnId: String(entry.sourceTurnId || nowString()).trim(),
+      confidence: Math.max(0, Math.min(1, Number(entry.confidence || 0) || 0)),
+      createdAt: String(entry.createdAt || nowString()).trim()
+    },
+    ...getRevisionLogs()
+  ];
+  setRevisionLogs(next);
+}
+
+function getLocalFacts() {
+  return readStorage(STORAGE_KEYS.localFacts, []).map(normalizeLocalFact);
+}
+
+function setLocalFacts(items) {
+  writeStorage(STORAGE_KEYS.localFacts, items.map(normalizeLocalFact));
+  rebuildFactDatabase();
+}
+
+function normalizeFactRecord(fact = {}) {
+  const aliases = uniqueStrings((fact.aliases || []).map(normalizePersonLabel), 12).filter(Boolean);
+  return {
+    id: String(fact.id || uid('fact-db')).trim(),
+    subjectId: String(fact.subjectId || '').trim(),
+    subjectType: String(fact.subjectType || 'user').trim() || 'user',
+    predicate: String(fact.predicate || '').trim(),
+    object: String(fact.object || '').trim(),
+    canonicalObjectId: String(fact.canonicalObjectId || buildCanonicalPersonId(fact.object || '')).trim(),
+    factType: String(fact.factType || '').trim(),
+    verificationStatus: ['unverified', 'supported', 'verified'].includes(String(fact.verificationStatus || '').trim())
+      ? String(fact.verificationStatus || '').trim()
+      : 'unverified',
+    confidence: Math.max(0, Math.min(1, Number(fact.confidence || 0) || 0)),
+    aliases,
+    evidenceIds: uniqueStrings(fact.evidenceIds || [], 12),
+    lastSeenAt: String(fact.lastSeenAt || nowString()).trim(),
+    notes: String(fact.notes || '').trim()
+  };
+}
+
+function getFactDatabase() {
+  return readStorage(STORAGE_KEYS.factDatabase, []).map(normalizeFactRecord);
+}
+
+function setFactDatabase(items) {
+  writeStorage(STORAGE_KEYS.factDatabase, items.map(normalizeFactRecord));
+}
+
+function getVerifiedFacts() {
+  return getFactDatabase().filter((item) => item.verificationStatus === 'verified');
+}
+
+function rebuildFactDatabase() {
+  const facts = [];
+  const localFacts = readStorage(STORAGE_KEYS.localFacts, []).map(normalizeLocalFact);
+  const aliasRecords = getPersonAliasRecords();
+  const activeEvent = getActiveEventContext();
+  const revisionLogs = getRevisionLogs();
+
+  localFacts.forEach((fact) => {
+    const object = resolveCanonicalPersonName(fact.object);
+    const isVerified = fact.status === 'active'
+      || fact.status === 'revised'
+      || fact.verificationStatus === 'verified'
+      || (fact.status === 'supported' && fact.confidence >= 0.76);
+    facts.push(normalizeFactRecord({
+      subjectId: fact.subject,
+      subjectType: 'user',
+      predicate: fact.predicate,
+      object,
+      canonicalObjectId: buildCanonicalPersonId(object),
+      factType: fact.factType,
+      verificationStatus: isVerified ? 'verified' : fact.status === 'supported' ? 'supported' : 'unverified',
+      confidence: isVerified ? Math.max(0.82, fact.confidence) : fact.confidence,
+      aliases: [object],
+      evidenceIds: fact.evidenceEventIds,
+      lastSeenAt: fact.lastConfirmedAt || fact.firstSeenAt,
+      notes: fact.notes
+    }));
+  });
+
+  aliasRecords.forEach((record) => {
+    record.aliases.forEach((alias) => {
+      facts.push(normalizeFactRecord({
+        subjectId: record.canonicalId,
+        subjectType: 'person',
+        predicate: 'person_alias',
+        object: record.displayName,
+        canonicalObjectId: record.canonicalId,
+        factType: 'alias_fact',
+        verificationStatus: 'verified',
+        confidence: Math.max(0.88, record.confidence || 0.88),
+        aliases: record.aliases,
+        evidenceIds: [`alias:${record.canonicalId}`],
+        lastSeenAt: record.updatedAt,
+        notes: alias === record.displayName ? 'preferred_display_name' : `alias:${alias}`
+      }));
+    });
+  });
+
+  if (activeEvent?.summary) {
+    const revisedFields = new Set(revisionLogs.filter((item) => item.targetEventId === activeEvent.id).map((item) => item.field));
+    (activeEvent.people || []).forEach((name) => {
+      const canonicalName = resolveCanonicalPersonName(name);
+      facts.push(normalizeFactRecord({
+        subjectId: activeEvent.id,
+        subjectType: 'event',
+        predicate: 'event_person',
+        object: canonicalName,
+        canonicalObjectId: buildCanonicalPersonId(canonicalName),
+        factType: 'event_slot_fact',
+        verificationStatus: revisedFields.has('people') || activeEvent.confidence >= 0.82 ? 'verified' : 'supported',
+        confidence: revisedFields.has('people') ? 0.96 : Math.max(0.72, activeEvent.confidence || 0.72),
+        aliases: [canonicalName],
+        evidenceIds: [activeEvent.sourceTurnId || activeEvent.id],
+        lastSeenAt: activeEvent.lastUpdatedAt,
+        notes: activeEvent.summary
+      }));
+    });
+    if (activeEvent.timeRef?.normalizedLabel || activeEvent.timeLabel) {
+      const timeObject = activeEvent.timeRef?.normalizedLabel || activeEvent.timeLabel;
+      facts.push(normalizeFactRecord({
+        subjectId: activeEvent.id,
+        subjectType: 'event',
+        predicate: 'event_time',
+        object: timeObject,
+        canonicalObjectId: String(activeEvent.timeRef?.resolvedDate || timeObject).trim(),
+        factType: 'event_slot_fact',
+        verificationStatus: revisedFields.has('timeRef') || (activeEvent.timeRef?.confidence || 0) >= 0.9 ? 'verified' : 'supported',
+        confidence: revisedFields.has('timeRef') ? 0.96 : Math.max(activeEvent.timeRef?.confidence || 0, 0.72),
+        aliases: [timeObject],
+        evidenceIds: [activeEvent.sourceTurnId || activeEvent.id],
+        lastSeenAt: activeEvent.lastUpdatedAt,
+        notes: activeEvent.summary
+      }));
+    }
+  }
+
+  setFactDatabase(facts);
+}
+
+function rebuildLocalFacts() {
+  const memoryEvidence = getMemories().flatMap((memory) => (memory.people || []).map((item) => ({
+    type: 'person',
+    object: item.name,
+    evidenceId: memory.id,
+    createdAt: memory.createdAt
+  })));
+  const candidateEvidence = getMemoryCandidates()
+    .filter((item) => !item.dismissed && item.memorySignal)
+    .flatMap((candidate) => (candidate.people || []).map((name) => ({
+      type: 'person',
+      object: name,
+      evidenceId: candidate.id,
+      createdAt: candidate.createdAt
+    })));
+  const actionEvidence = getMemories()
+    .flatMap((memory) => (memory.actions || []).map((action) => ({
+      type: 'theme',
+      object: action,
+      evidenceId: memory.id,
+      createdAt: memory.createdAt
+    })));
+  const grouped = new Map();
+  [...memoryEvidence, ...candidateEvidence, ...actionEvidence].forEach((item) => {
+    const normalizedObject = item.type === 'person' ? resolveCanonicalPersonName(item.object) : item.object;
+    const key = `${item.type}:${normalizedObject}`;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push({ ...item, object: normalizedObject });
+  });
+
+  const nextFacts = Array.from(grouped.entries()).map(([key, items]) => {
+    const [type, object] = key.split(':');
+    const evidenceIds = uniqueStrings(items.map((item) => item.evidenceId), 8);
+    const supportCount = evidenceIds.length;
+    const status = supportCount >= 3 ? 'active' : supportCount >= 2 ? 'supported' : 'proposed';
+    const confidence = supportCount >= 3 ? 0.88 : supportCount >= 2 ? 0.76 : 0.42;
+    if (type === 'person') {
+      return normalizeLocalFact({
+        subject: 'user',
+        predicate: 'often_mentions_person',
+        object,
+        label: `用户常提到${object}`,
+        factType: 'relationship_pattern',
+        confidence,
+        verificationStatus: supportCount >= 2 ? 'verified' : 'supported',
+        stability: supportCount >= 3 ? 'stable' : supportCount >= 2 ? 'emerging' : 'volatile',
+        status,
+        evidenceEventIds: evidenceIds,
+        firstSeenAt: items[items.length - 1]?.createdAt || nowString(),
+        lastConfirmedAt: items[0]?.createdAt || nowString(),
+        notes: supportCount >= 2 ? '由多个独立事件或候选支持' : '证据不足，暂不进入回答层'
+      });
+    }
+    return normalizeLocalFact({
+      subject: 'user',
+      predicate: 'stable_life_theme',
+      object,
+      label: `反复出现的生活主题：${object}`,
+      factType: 'life_theme_fact',
+      confidence,
+      verificationStatus: supportCount >= 3 ? 'verified' : supportCount >= 2 ? 'supported' : 'unverified',
+      stability: supportCount >= 3 ? 'stable' : supportCount >= 2 ? 'emerging' : 'volatile',
+      status,
+      evidenceEventIds: evidenceIds,
+      firstSeenAt: items[items.length - 1]?.createdAt || nowString(),
+      lastConfirmedAt: items[0]?.createdAt || nowString(),
+      notes: supportCount >= 2 ? '由重复动作主题支持' : '证据不足，暂不进入回答层'
+    });
+  }).filter((fact) => fact.object && !/^(她|他|那位|这个人|那个人)$/.test(fact.object));
+
+  setLocalFacts(nextFacts);
+}
+
+function extractActionHints(text) {
+  const value = String(text || '').trim();
+  const actions = [];
+  if (/下棋|象棋|围棋/.test(value)) actions.push('下棋');
+  if (/广场舞|跳舞/.test(value)) actions.push('跳广场舞');
+  if (/写(?:了)?贺卡|贺卡/.test(value)) actions.push('写贺卡');
+  if (/过生日|庆祝生日|庆生/.test(value)) actions.push('庆祝生日');
+  if (/出门/.test(value)) actions.push('出门');
+  if (/办事/.test(value)) actions.push('办事');
+  if (/通(?:了)?电话|打(?:了)?电话/.test(value)) actions.push('通电话');
+  if (/见过面|见面|见过/.test(value)) actions.push('见面');
+  if (/做了|做饭|下厨|烧了|煮了|炖了/.test(value)) actions.push('做饭');
+  if (/红烧肉/.test(value)) actions.push('做红烧肉');
+  if (/吃了|吃过|吃饭/.test(value)) actions.push('吃饭');
+  return uniqueStrings(actions, 4);
+}
+
+function buildActiveEventSummary(event = {}) {
+  const peoplePart = event.people?.length ? event.people.join('、') : '';
+  const timePart = event.timeLabel || '';
+  const actionPart = event.actions?.length ? event.actions.join('、') : '';
+  return [timePart, peoplePart, actionPart].filter(Boolean).join('，');
+}
+
+function detectActiveEventFollowUp(text, retrieval = {}, activeEvent = getActiveEventContext()) {
+  const value = String(text || '').trim();
+  if (!activeEvent?.summary) return false;
+  if (!value || isGreetingLike(value) || isMetaConversation(value) || isCorrectionLike(value)) return false;
+  const features = retrieval?.queryFeatures || buildQueryFeatures(value);
+  if ((features.explicitPeople || []).length || (features.timeRefs || []).length) return false;
+  if (extractActionHints(value).length) return true;
+  if (value.length <= 8 && !/[，。！？!?]/.test(value)) return true;
+  return false;
+}
+
+function getDistinctRelativeTimeRefs(text) {
+  return uniqueStrings(
+    guessTimeRefs(text).filter((item) => /今天|今儿|昨天|前天|大前天|明天|后天|刚刚|刚才|前几天|前两天|前三天|这周|本周|上周|下周|每周/.test(item)),
+    8
+  );
+}
+
+function hasStandaloneEventStructure(text) {
+  const value = String(text || '').trim();
+  return /(做了|吃了|去了|买了|看了|打了|通了|见了|找到|准备去|想去|出门|办事|做饭|跳舞|广场舞|红烧肉|鸡蛋羹|下棋|写(?:了)?贺卡|过生日|庆祝生日|庆生)/.test(value);
+}
+
+function detectEventLinkAction({ signals, features, actions, existing, replyPlan }) {
+  if (signals.metaConversation) return 'uncertain';
+  if (signals.correctionType === 'time' || signals.correctionType === 'entity') return existing ? 'revise_existing_event' : 'uncertain';
+  if (replyPlan?.isActiveEventFollowUp || signals.isActiveEventFollowUp) return existing ? 'attach_to_existing_event' : 'uncertain';
+  if (existing?.summary) {
+    const peopleOverlap = (features.explicitPeople || []).some((name) => (existing.people || []).includes(resolveCanonicalPersonName(name)));
+    const actionOverlap = actions.some((action) => (existing.actions || []).includes(action));
+    const noNewTime = !(features.timeRefs || []).length;
+    if ((peopleOverlap || actionOverlap) && noNewTime) return 'attach_to_existing_event';
+  }
+  if ((features.explicitPeople.length || features.timeRefs.length || actions.length) && hasStandaloneEventStructure(String(features.text || ''))) {
+    return existing ? 'create_new_event' : 'create_new_event';
+  }
+  if (existing && (features.explicitPeople.length || actions.length)) return 'attach_to_existing_event';
+  return 'uncertain';
+}
+
+function inferActiveEventStatus({ linkAction, confidence = 0, existing = null, actions = [], people = [], timeRef = null }) {
+  if (linkAction === 'revise_existing_event') return 'revised';
+  if (linkAction === 'create_new_event') {
+    if ((people.length || actions.length) && (timeRef?.normalizedLabel || timeRef?.lifeStageLabel)) return 'active';
+    return 'tentative';
+  }
+  if (linkAction === 'attach_to_existing_event') {
+    if (existing?.status === 'confirmed' || confidence >= 0.85) return 'confirmed';
+    return 'active';
+  }
+  return existing?.status || 'tentative';
+}
+
+function rewriteCandidateTimeLabel(candidate, previousLabel, nextLabel) {
+  const replaceLabel = (value) => String(value || '').replace(previousLabel, nextLabel).trim();
+  return normalizeMemoryCandidate({
+    ...candidate,
+    filteredText: replaceLabel(candidate.filteredText),
+    summary: replaceLabel(candidate.summary),
+    narrative: replaceLabel(candidate.narrative),
+    timeType: /今天|今儿|刚刚|刚才/.test(nextLabel) ? 'present' : 'relative',
+    updatedAt: nowString()
+  });
+}
+
+function reviseRecentCandidateForTimeCorrection(previousEvent, nextEvent) {
+  if (!previousEvent?.timeLabel || !nextEvent?.timeLabel || previousEvent.timeLabel === nextEvent.timeLabel) return;
+  const previousPeople = previousEvent.people || [];
+  const nextPeople = nextEvent.people || [];
+  const previousActions = previousEvent.actions || [];
+  const nextActions = nextEvent.actions || [];
+  const candidates = getMemoryCandidates();
+  let changed = false;
+  const nextCandidates = candidates.map((item) => {
+    if (item.dismissed || !item.memorySignal) return item;
+    const hasPeopleMatch = item.people.some((name) => previousPeople.includes(name) || nextPeople.includes(name));
+    const hasActionMatch = [...previousActions, ...nextActions].some((action) => action && ((item.summary || '').includes(action) || (item.filteredText || '').includes(action)));
+    const hasOldTime = (item.summary || '').includes(previousEvent.timeLabel) || (item.filteredText || '').includes(previousEvent.timeLabel);
+    if ((hasPeopleMatch || hasActionMatch) && hasOldTime) {
+      changed = true;
+      return rewriteCandidateTimeLabel(item, previousEvent.timeLabel, nextEvent.timeLabel);
+    }
+    return item;
+  });
+  if (changed) {
+    setMemoryCandidates(nextCandidates);
+  }
+}
+
+function updateActiveEventContextFromTurn(text, retrieval = {}, replyPlan = {}) {
+  const value = String(text || '').trim();
+  if (!value) return;
+  const existing = getActiveEventContext();
+  const aliasMerge = extractAliasMerge(value, retrieval);
+  if (aliasMerge) {
+    mergePersonAliases(aliasMerge.displayName, aliasMerge.aliases, 0.96);
+  }
+  const features = retrieval?.queryFeatures || buildQueryFeatures(value);
+  const signals = detectTurnSignals(value, { ...retrieval, activeEvent: existing });
+  const timeRef = normalizeTimeRef(replyPlan?.timeRef || signals.timeRef);
+  const resolvedPeople = resolvePeopleForTurn(value, { ...retrieval, activeEvent: existing }, replyPlan);
+  if (signals.metaConversation) return;
+
+  if (signals.correctionType === 'time' && existing) {
+    const previous = normalizeActiveEventContext(existing);
+    const next = {
+      ...existing,
+      linkAction: 'revise_existing_event',
+      status: 'revised',
+      timeLabel: signals.timeAnchorLabel || existing.timeLabel,
+      resolvedDate: signals.resolvedRelativeTime || existing.resolvedDate,
+      timeRef,
+      lastUserText: value,
+      lastUpdatedAt: nowString(),
+      confidence: Math.max(existing.confidence || 0.6, 0.82)
+    };
+    next.summary = buildActiveEventSummary(next) || existing.summary;
+    setActiveEventContext(next);
+    appendRevisionLog({
+      targetEventId: previous.id,
+      revisionType: 'time_revision',
+      field: 'timeRef',
+      oldValue: previous.timeRef?.normalizedLabel || previous.timeLabel || previous.resolvedDate || '',
+      newValue: timeRef.normalizedLabel || next.timeLabel || next.resolvedDate || '',
+      sourceTurnId: nowString(),
+      confidence: 0.96
+    });
+    reviseRecentCandidateForTimeCorrection(previous, next);
+    backfillRecentCandidatesFromActiveEvent(next);
+    return;
+  }
+
+  if (signals.correctionType === 'entity' && existing && features.explicitPeople.length) {
+    const correctedPeople = resolvedPeople.length ? [resolvedPeople[resolvedPeople.length - 1]] : [resolveCanonicalPersonName(features.explicitPeople[features.explicitPeople.length - 1])];
+    const previous = normalizeActiveEventContext(existing);
+    const next = {
+      ...existing,
+      linkAction: 'revise_existing_event',
+      status: 'revised',
+      people: correctedPeople,
+      lastUserText: value,
+      lastUpdatedAt: nowString(),
+      confidence: Math.max(existing.confidence || 0.6, 0.82)
+    };
+    next.summary = buildActiveEventSummary(next) || existing.summary;
+    setActiveEventContext(next);
+    appendRevisionLog({
+      targetEventId: previous.id,
+      revisionType: 'entity_revision',
+      field: 'people',
+      oldValue: previous.people || [],
+      newValue: correctedPeople,
+      sourceTurnId: nowString(),
+      confidence: 0.96
+    });
+    backfillRecentCandidatesFromActiveEvent(next);
+    return;
+  }
+
+  const actions = extractActionHints(value);
+  const eventLinkAction = detectEventLinkAction({ signals, features: { ...features, text: value }, actions, existing, replyPlan });
+  const hasFreshEventSignal = resolvedPeople.length || features.timeRefs.length || actions.length;
+  const shouldStartNewEvent = Boolean(
+    hasFreshEventSignal
+    && existing
+    && !signals.metaConversation
+    && signals.correctionType === 'none'
+    && !(replyPlan?.isActiveEventFollowUp || signals.isActiveEventFollowUp)
+    && eventLinkAction === 'create_new_event'
+    && (
+      (features.timeRefs.length && hasStandaloneEventStructure(value))
+      || (features.explicitPeople.length && actions.length)
+    )
+  );
+
+  if (shouldStartNewEvent) {
+    const nextConfidence = 0.78;
+    const next = {
+      id: uid('active-event'),
+      eventType: 'daily_event',
+      linkAction: eventLinkAction,
+      people: uniqueStrings(resolvedPeople, 4),
+      actions: uniqueStrings(actions, 4),
+      timeLabel: signals.timeAnchorLabel || features.timeRefs[0] || '',
+      resolvedDate: signals.resolvedRelativeTime || '',
+      timeRef,
+      summary: '',
+      lastUserText: value,
+      lastUpdatedAt: nowString(),
+      sourceTurnId: nowString(),
+      confidence: nextConfidence,
+      status: inferActiveEventStatus({ linkAction: eventLinkAction, confidence: nextConfidence, actions, people: resolvedPeople, timeRef })
+    };
+    next.summary = buildActiveEventSummary(next) || compactText(value, 28);
+    setActiveEventContext(next);
+    backfillRecentCandidatesFromActiveEvent(next);
+    return;
+  }
+
+  if (hasFreshEventSignal) {
+    const nextConfidence = existing?.summary ? Math.max(existing.confidence || 0.6, 0.74) : 0.74;
+    const next = {
+      ...(existing || {}),
+      eventType: existing?.eventType || 'daily_event',
+      linkAction: eventLinkAction,
+      people: uniqueStrings([...(existing?.people || []), ...resolvedPeople], 4),
+      actions: uniqueStrings([...(existing?.actions || []), ...actions], 4),
+      timeLabel: signals.timeAnchorLabel || features.timeRefs[0] || existing?.timeLabel || '',
+      resolvedDate: signals.resolvedRelativeTime || existing?.resolvedDate || '',
+      timeRef: timeRef.normalizedLabel ? timeRef : (existing?.timeRef || buildEmptyTimeRef()),
+      lastUserText: value,
+      lastUpdatedAt: nowString(),
+      sourceTurnId: existing?.sourceTurnId || nowString(),
+      confidence: nextConfidence,
+      status: inferActiveEventStatus({ linkAction: eventLinkAction, existing, confidence: nextConfidence, actions: uniqueStrings([...(existing?.actions || []), ...actions], 4), people: uniqueStrings([...(existing?.people || []), ...resolvedPeople], 4), timeRef: timeRef.normalizedLabel ? timeRef : existing?.timeRef })
+    };
+    next.summary = buildActiveEventSummary(next) || compactText(value, 28);
+    setActiveEventContext(next);
+    backfillRecentCandidatesFromActiveEvent(next);
+    return;
+  }
+
+  if ((replyPlan?.isActiveEventFollowUp || detectActiveEventFollowUp(value, retrieval, existing)) && existing) {
+    const next = {
+      ...existing,
+      linkAction: 'attach_to_existing_event',
+      actions: uniqueStrings([...(existing.actions || []), ...actions], 4),
+      lastUserText: value,
+      lastUpdatedAt: nowString(),
+      confidence: Math.max(existing.confidence || 0.6, 0.7),
+      status: inferActiveEventStatus({ linkAction: 'attach_to_existing_event', existing, confidence: Math.max(existing.confidence || 0.6, 0.7), actions: uniqueStrings([...(existing.actions || []), ...actions], 4), people: existing.people, timeRef: existing.timeRef })
+    };
+    setActiveEventContext(next);
+    backfillRecentCandidatesFromActiveEvent(next);
+  }
 }
 
 function extractTimelineDate(text) {
@@ -431,8 +1680,21 @@ function buildLocalReplyPlan(text, retrieval) {
   const mode = retrieval.understanding?.responseMode || 'chatting';
   const questions = retrieval.pendingTimeQuestions || [];
   const rhythm = buildRhythmState(text, retrieval);
+  const shortTurn = rhythm.shortTurnInterpretation || interpretShortTurn(text, getLastAssistantText(), retrieval.activeEvent || getActiveEventContext());
   const features = retrieval.queryFeatures || buildQueryFeatures(text);
+  const signals = detectTurnSignals(text, retrieval);
   const strongMemorySignal = shouldTreatAsMemorySignal(text, features);
+  const activeEvent = retrieval.activeEvent || getActiveEventContext();
+  const eventActions = extractActionHints(String(text || '').trim());
+  const eventLinkAction = detectEventLinkAction({ signals, features: { ...features, text: String(text || '').trim() }, actions: eventActions, existing: activeEvent, replyPlan: {} });
+  const hasDailyFragmentSignal = (features.timeRefs || []).length > 0
+    && /(吃|喝|做|红烧肉|鸡蛋羹|面条|米饭|菜|汤|好吃|记住怎么做|做法|出门|买菜|广场舞|通电话|见面|贺卡|过生日|庆祝生日|庆生)/.test(String(text || '').trim());
+  const hasStructuredDailyEventSignal = (features.timeRefs || []).length > 0
+    && (
+      (features.explicitPeople || []).length > 0
+      || /(下棋|通电话|打电话|见面|出门|办事|做饭|红烧肉|鸡蛋羹|吃了|喝了|跳舞|广场舞|买菜|约的我|约我|写(?:了)?贺卡|过生日|庆祝生日|庆生)/.test(String(text || '').trim())
+    )
+    && String(text || '').trim().length >= 8;
   const planMap = {
     small_talk: {
       selfJudgment: '这轮更适合自然接话，不适合追问。',
@@ -465,30 +1727,88 @@ function buildLocalReplyPlan(text, retrieval) {
       shouldAsk: false
     }
   };
-  return {
-    responseMode: rhythm.shouldStaySupportive
+  const responseMode = signals.metaConversation
+    ? 'chatting'
+    : signals.isActiveEventFollowUp
+      ? 'chatting'
+    : shortTurn.fragmentType === 'answer_to_question'
+      ? 'chatting'
+    : rhythm.shouldStaySupportive
       ? 'emotional_support'
       : rhythm.shouldLowerMemoryDrive && (mode === 'memory_narrative' || mode === 'memory_capture' || mode === 'relationship_signal')
         ? 'chatting'
-        : mode,
-    memorySignal: strongMemorySignal && !rhythm.currentThin && (mode === 'memory_narrative' || mode === 'memory_capture' || (mode === 'relationship_signal' && retrieval.queryFeatures?.explicitPeople?.length > 0)),
-    reason: strongMemorySignal && !rhythm.currentThin && (mode === 'memory_narrative' || mode === 'memory_capture' || (mode === 'relationship_signal' && retrieval.queryFeatures?.explicitPeople?.length > 0))
-      ? '这轮出现了可沉淀的记忆线索。'
-      : '这轮更适合先聊天，不急着进入记忆整理。',
+        : mode;
+  const replyStrategy = signals.metaConversation
+    ? 'avoid_memory_claim'
+    : signals.correctionType !== 'none'
+      ? 'acknowledge_revision'
+      : shortTurn.fragmentType === 'answer_to_question'
+        ? 'continue_event'
+      : signals.isActiveEventFollowUp
+        ? 'continue_event'
+      : signals.hasTimeConflict
+        ? 'clarify_time'
+        : responseMode === 'small_talk'
+          ? 'small_talk'
+          : 'continue_event';
+  const shouldPromoteAsMemorySignal = strongMemorySignal || hasDailyFragmentSignal || hasStructuredDailyEventSignal;
+  const confirmation = buildConfirmationDecision(text, retrieval, {
+    correctionType: signals.correctionType,
+    isActiveEventFollowUp: signals.isActiveEventFollowUp,
+    timeRef: signals.timeRef,
+    shortTurnType: shortTurn.fragmentType,
+    targetSlot: shortTurn.targetSlot,
+    resolvedValue: shortTurn.resolvedValue
+  });
+  return {
+    responseMode,
+    memorySignal: !signals.metaConversation
+      && signals.correctionType === 'none'
+      && shouldPromoteAsMemorySignal
+      && (!rhythm.currentThin || hasStructuredDailyEventSignal)
+      && (hasDailyFragmentSignal || hasStructuredDailyEventSignal || mode === 'memory_narrative' || mode === 'memory_capture' || (mode === 'relationship_signal' && retrieval.queryFeatures?.explicitPeople?.length > 0)),
+    reason: signals.metaConversation
+      ? '这轮主要是在说产品状态或系统问题，应避免召回生活记忆。'
+      : signals.correctionType !== 'none'
+        ? '这轮主要是在纠正前面的理解，先修正再继续。'
+        : signals.isActiveEventFollowUp && activeEvent?.summary
+          ? '这轮更像是在补充刚才那件事，应优先接续当前活跃事件。'
+          : hasDailyFragmentSignal
+            ? '这轮是带有明确时间锚点的日常片段，可以进入候选记忆。'
+        : strongMemorySignal && !rhythm.currentThin && (mode === 'memory_narrative' || mode === 'memory_capture' || (mode === 'relationship_signal' && retrieval.queryFeatures?.explicitPeople?.length > 0))
+          ? '这轮出现了可沉淀的记忆线索。'
+          : '这轮更适合先聊天，不急着进入记忆整理。',
     suggestedQuestion: rhythm.shouldReduceAsking ? '' : (questions[0] || ''),
-    ...planMap[
-      rhythm.shouldStaySupportive
-        ? 'emotional_support'
-        : rhythm.shouldLowerMemoryDrive && (mode === 'memory_narrative' || mode === 'memory_capture' || mode === 'relationship_signal')
-          ? 'chatting'
-          : mode
-    ]
+    isMetaConversation: signals.metaConversation,
+    correctionType: signals.correctionType,
+    shouldAvoidMemoryRecall: signals.shouldAvoidMemoryRecall,
+    timeAnchorLabel: signals.timeAnchorLabel,
+    resolvedRelativeTime: signals.resolvedRelativeTime,
+    timeRef: signals.timeRef,
+    timeConfidence: signals.timeConfidence,
+    hasTimeConflict: signals.hasTimeConflict,
+    conflictDetected: signals.conflictDetected,
+    revisionNeeded: signals.revisionNeeded,
+    replyTimeStrategy: signals.replyTimeStrategy,
+    eventLinkAction,
+    shortTurnType: shortTurn.fragmentType,
+    targetSlot: shortTurn.targetSlot,
+    resolvedValue: shortTurn.resolvedValue,
+    hasEntityConflict: signals.hasEntityConflict,
+    replyStrategy,
+    isActiveEventFollowUp: signals.isActiveEventFollowUp,
+    needsConfirmation: confirmation.needsConfirmation,
+    confirmationPrompt: confirmation.confirmationPrompt,
+    consistencyWarnings: confirmation.consistencyWarnings,
+    ...planMap[responseMode]
   };
 }
 
 async function requestReplyPlan(text, retrieval) {
   const fallback = buildLocalReplyPlan(text, retrieval);
   const rhythm = buildRhythmState(text, retrieval);
+  const timeAnchor = buildTimeAnchor();
+  const localSignals = detectTurnSignals(text, retrieval);
   try {
     const response = await fetch('http://localhost:3001/api/reply-plan', {
       method: 'POST',
@@ -507,7 +1827,11 @@ async function requestReplyPlan(text, retrieval) {
           })),
           pendingTimeQuestions: retrieval.pendingTimeQuestions || [],
           recentStrategyTrail: getStrategyTrail().slice(0, 4),
-          rhythm
+          rhythm,
+          timeAnchor,
+          localSignals,
+          activeEvent: retrieval.activeEvent || null,
+          verifiedFacts: retrieval.verifiedFacts || []
         },
         history: getChatHistory().slice(-6).map((item) => ({
           role: item.role,
@@ -524,12 +1848,42 @@ async function requestReplyPlan(text, retrieval) {
       memorySignal: typeof data.memorySignal === 'boolean' ? data.memorySignal : fallback.memorySignal,
       reason: String(data.reason || fallback.reason).trim() || fallback.reason,
       shouldAsk: typeof data.shouldAsk === 'boolean' ? data.shouldAsk : fallback.shouldAsk,
-      suggestedQuestion: String(data.suggestedQuestion || fallback.suggestedQuestion).trim()
+      suggestedQuestion: String(data.suggestedQuestion || fallback.suggestedQuestion).trim(),
+      isMetaConversation: typeof data.isMetaConversation === 'boolean' ? data.isMetaConversation : fallback.isMetaConversation,
+      correctionType: String(data.correctionType || fallback.correctionType || 'none').trim() || 'none',
+      shouldAvoidMemoryRecall: typeof data.shouldAvoidMemoryRecall === 'boolean' ? data.shouldAvoidMemoryRecall : fallback.shouldAvoidMemoryRecall,
+      timeAnchorLabel: String(data.timeAnchorLabel || fallback.timeAnchorLabel || '').trim(),
+      resolvedRelativeTime: String(data.resolvedRelativeTime || fallback.resolvedRelativeTime || '').trim(),
+      timeRef: data.timeRef && typeof data.timeRef === 'object' ? { ...fallback.timeRef, ...data.timeRef } : fallback.timeRef,
+      timeConfidence: typeof data.timeConfidence === 'number' ? data.timeConfidence : fallback.timeConfidence,
+      hasTimeConflict: typeof data.hasTimeConflict === 'boolean' ? data.hasTimeConflict : fallback.hasTimeConflict,
+      conflictDetected: typeof data.conflictDetected === 'boolean' ? data.conflictDetected : fallback.conflictDetected,
+      revisionNeeded: typeof data.revisionNeeded === 'boolean' ? data.revisionNeeded : fallback.revisionNeeded,
+      replyTimeStrategy: String(data.replyTimeStrategy || fallback.replyTimeStrategy || 'no_time_anchor').trim() || 'no_time_anchor',
+      eventLinkAction: ['create_new_event', 'attach_to_existing_event', 'revise_existing_event', 'uncertain'].includes(String(data.eventLinkAction || '').trim())
+        ? String(data.eventLinkAction || '').trim()
+        : fallback.eventLinkAction,
+      hasEntityConflict: typeof data.hasEntityConflict === 'boolean' ? data.hasEntityConflict : fallback.hasEntityConflict,
+      replyStrategy: String(data.replyStrategy || fallback.replyStrategy || 'continue_event').trim() || 'continue_event',
+      isActiveEventFollowUp: typeof data.isActiveEventFollowUp === 'boolean' ? data.isActiveEventFollowUp : fallback.isActiveEventFollowUp,
+      needsConfirmation: typeof data.needsConfirmation === 'boolean' ? data.needsConfirmation : fallback.needsConfirmation,
+      confirmationPrompt: String(data.confirmationPrompt || fallback.confirmationPrompt || '').trim(),
+      consistencyWarnings: Array.isArray(data.consistencyWarnings) ? uniqueStrings(data.consistencyWarnings, 3) : fallback.consistencyWarnings
     };
   } catch (error) {
     console.error(error);
     return fallback;
   }
+}
+
+function shouldUseFastReplyPlan(text, retrieval = {}) {
+  const value = String(text || '').trim();
+  if (!value) return true;
+  const signals = detectTurnSignals(value, retrieval);
+  if (signals.metaConversation || signals.correctionType !== 'none' || signals.isActiveEventFollowUp) return true;
+  if (isGreetingLike(value) || isShortBackchannel(value)) return true;
+  if (value.length <= 8 && !(retrieval?.queryFeatures?.explicitPeople || []).length && !(retrieval?.queryFeatures?.timeRefs || []).length) return true;
+  return false;
 }
 
 async function requestChatRecap(text, reply, retrieval) {
@@ -593,10 +1947,16 @@ function buildLocalMemoryFilter(text, retrieval, replyPlan) {
   const value = String(text || '').trim();
   const recentUserTurn = [...getChatHistory()].reverse().find((item) => item.role === 'user');
   const features = retrieval?.queryFeatures || buildQueryFeatures(value);
-  const people = features.explicitPeople || [];
+  const signals = detectTurnSignals(value, retrieval);
+  const timeRef = normalizeTimeRef(replyPlan?.timeRef || signals.timeRef);
+  const people = resolvePeopleForTurn(value, retrieval, replyPlan).filter((name) => !isPronounPersonName(name));
   const timeRefs = features.timeRefs || [];
   const mode = replyPlan?.responseMode || retrieval?.understanding?.responseMode || 'chatting';
   const noiseFiltered = [];
+  const hasFoodSignal = /(吃|喝|做|红烧肉|鸡蛋羹|面条|米饭|菜|汤|好吃|味道)/.test(value);
+  const hasDailyLifeSignal = /(今天|昨天|刚刚|前几天|出门|做饭|吃|喝|通电话|见面|买菜|跳广场舞|办事)/.test(value);
+  const hasLifeStageSignal = /(小时候|上小学|上初中|上高中|大学时候|工作后|结婚后|退休后|那几年|年轻的时候)/.test(value);
+  const eventKey = deriveEventKey(value, retrieval, replyPlan, { people, timeRef });
   let filteredText = value
     .replace(/(?:你傻啊|好蠢啊|我们不是刚开始聊天吗|闲聊，不需要这么紧绷)/g, '')
     .replace(/\s+/g, ' ')
@@ -606,22 +1966,33 @@ function buildLocalMemoryFilter(text, retrieval, replyPlan) {
     noiseFiltered.push('已去掉元对话和抱怨性噪声');
   }
 
-  const memorySignal = Boolean(replyPlan?.memorySignal) && shouldTreatAsMemorySignal(filteredText, features);
+  const memorySignal = !signals.metaConversation
+    && !replyPlan?.isMetaConversation
+    && !(replyPlan?.shouldAvoidMemoryRecall)
+    && signals.correctionType === 'none'
+    && Boolean(replyPlan?.memorySignal)
+    && shouldTreatAsMemorySignal(filteredText, features);
   const candidateType = !memorySignal
     ? 'none'
     : /想|想起|惦记|挂念|怀念/.test(filteredText)
       ? 'emotion_note'
-    : timeRefs.some((item) => /今天|今儿|刚才|刚刚|刚开始|这会儿/.test(item))
+    : (hasFoodSignal && hasDailyLifeSignal)
       ? 'daily_fragment'
-      : people.length && !timeRefs.length
+    : timeRefs.some((item) => /今天|今儿|昨天|前天|刚才|刚刚|刚开始|这会儿|前几天/.test(item))
+      ? 'daily_fragment'
+    : hasLifeStageSignal
+      ? 'timeline_memory'
+    : people.length && !timeRefs.length
         ? 'person_clue'
       : timeRefs.length
-          ? 'timeline_memory'
+          ? 'event_memory'
           : 'event_memory';
   const summary = !memorySignal
     ? ''
     : /想|想起|惦记|挂念|怀念/.test(filteredText) && people.length
       ? `今天有一点关于${people[0]}的想念。`
+      : hasFoodSignal && /今天|昨天|前几天|刚刚/.test(filteredText)
+        ? compactText(filteredText, 42)
       : timeRefs.some((item) => /今天|今儿/.test(item)) && people.length && /想|想起|惦记|挂念|怀念/.test(filteredText)
         ? `今天想起了${people[0]}。`
         : compactText(filteredText, 52);
@@ -629,6 +2000,8 @@ function buildLocalMemoryFilter(text, retrieval, replyPlan) {
     ? ''
     : /想|想起|惦记|挂念|怀念/.test(filteredText) && people.length
       ? `先记下这一点：今天的心情里，有一部分是在想着${people[0]}。这更像一条当下的心绪记录，不一定非要展开成完整往事。`
+      : hasFoodSignal && hasDailyLifeSignal
+        ? `先把这段日常片段收着：${compactText(filteredText, 66)}。这更像最近生活里的小事，先按日常片段记下，不要拉成长时间线。`
       : `先把这段内容放进待整理里：${compactText(filteredText, 70)}。如果后面你继续讲，它再慢慢长成更完整的一页。`;
 
   return normalizeMemoryCandidate({
@@ -637,7 +2010,16 @@ function buildLocalMemoryFilter(text, retrieval, replyPlan) {
     candidateType,
     confidence: memorySignal ? (people.length || timeRefs.length ? 0.72 : 0.58) : 0.08,
     people,
-    timeType: !memorySignal ? 'none' : timeRefs.length ? (/今天|今儿|刚才|刚刚|刚开始|这会儿/.test(timeRefs.join(' ')) ? 'present' : 'relative') : 'missing',
+    timeType: !memorySignal
+      ? 'none'
+      : timeRef.timeType === 'life_stage'
+        ? 'relative'
+        : timeRefs.length
+          ? (/今天|今儿|刚才|刚刚|刚开始|这会儿/.test(timeRefs.join(' ')) ? 'present' : 'relative')
+          : 'missing',
+    timeRef,
+    timeConfidence: timeRef.confidence,
+    eventKey,
     isComplete: memorySignal && !isThinMemoryText(filteredText) && (people.length > 0 || timeRefs.length > 0),
     summary,
     narrative,
@@ -662,6 +2044,8 @@ function buildLocalMemoryFilter(text, retrieval, replyPlan) {
 async function requestMemoryFilter(text, retrieval, replyPlan) {
   const fallback = buildLocalMemoryFilter(text, retrieval, replyPlan);
   const recentUserTurn = [...getChatHistory()].reverse().find((item) => item.role === 'user');
+  const timeAnchor = buildTimeAnchor();
+  const localSignals = detectTurnSignals(text, retrieval);
   try {
     const response = await fetch('http://localhost:3001/api/memory-filter', {
       method: 'POST',
@@ -677,7 +2061,9 @@ async function requestMemoryFilter(text, retrieval, replyPlan) {
             people: (memory.people || []).map((item) => item.name),
             actions: memory.actions,
             timelineLabel: memory.timelineLabel
-          }))
+          })),
+          timeAnchor,
+          localSignals
         },
         replyPlan,
         history: getChatHistory().slice(-8).map((item) => ({
@@ -689,16 +2075,34 @@ async function requestMemoryFilter(text, retrieval, replyPlan) {
     });
     if (!response.ok) throw new Error('记忆过滤接口异常');
     const data = await response.json();
-    return normalizeMemoryCandidate({
-      ...fallback,
-      ...data,
-      sourceTurnIds: [recentUserTurn?.createdAt || nowString()],
-      updatedAt: nowString()
-    });
-  } catch (error) {
-    console.error(error);
-    return fallback;
+      return postProcessMemoryCandidate({
+        ...fallback,
+        ...data,
+        sourceTurnIds: [recentUserTurn?.createdAt || nowString()],
+        updatedAt: nowString()
+      }, text, retrieval, replyPlan);
+    } catch (error) {
+      console.error(error);
+      return postProcessMemoryCandidate(fallback, text, retrieval, replyPlan);
+    }
+}
+
+function schedulePostReplyProcessing(task) {
+  window.setTimeout(() => {
+    task().catch((error) => console.error(error));
+  }, 0);
+}
+
+async function processReplySideEffects(text, finalReply, retrieval, replyPlan, fallbackRecap = null) {
+  const recap = await requestChatRecap(text, finalReply, retrieval).catch(() => fallbackRecap || buildConversationRecap(text, retrieval));
+  const memoryCandidate = await requestMemoryFilter(text, retrieval, replyPlan).catch(() => buildLocalMemoryFilter(text, retrieval, replyPlan));
+  setLastChatRecap(recap);
+  if (memoryCandidate.memorySignal && memoryCandidate.summary) {
+    upsertMemoryCandidate(memoryCandidate, recap);
   }
+  renderMemoryCueFloat();
+  setCompanionStatus(recap.selfJudgment || replyPlan.selfJudgment || recap.status);
+  setAmbientQuote(recap.quote || retrieval.memories?.[0]?.title || '有些故事不急着说完，今天也可以只说一小段。');
 }
 
 function normalizeMemory(memory) {
@@ -755,6 +2159,28 @@ function normalizeMemory(memory) {
   };
 }
 
+function normalizeLocalFact(fact = {}) {
+  return {
+    id: String(fact.id || uid('fact')).trim(),
+    subject: String(fact.subject || 'user').trim() || 'user',
+    predicate: String(fact.predicate || '').trim(),
+    object: resolveCanonicalPersonName(fact.object || ''),
+    label: String(fact.label || '').trim(),
+    factType: String(fact.factType || '').trim(),
+    confidence: Math.max(0, Math.min(1, Number(fact.confidence || 0) || 0)),
+    verificationStatus: ['unverified', 'supported', 'verified'].includes(String(fact.verificationStatus || '').trim())
+      ? String(fact.verificationStatus || '').trim()
+      : 'unverified',
+    stability: ['volatile', 'emerging', 'stable'].includes(String(fact.stability || '').trim()) ? String(fact.stability || '').trim() : 'volatile',
+    status: ['proposed', 'supported', 'active', 'revised', 'stale', 'deprecated'].includes(String(fact.status || '').trim()) ? String(fact.status || '').trim() : 'proposed',
+    evidenceEventIds: uniqueStrings(fact.evidenceEventIds || [], 8),
+    firstSeenAt: String(fact.firstSeenAt || nowString()).trim(),
+    lastConfirmedAt: String(fact.lastConfirmedAt || fact.firstSeenAt || nowString()).trim(),
+    lastRevisedAt: String(fact.lastRevisedAt || '').trim(),
+    notes: String(fact.notes || '').trim()
+  };
+}
+
 function ensureSeedData() {
   const existingMemories = readStorage(STORAGE_KEYS.memories, null);
   if (!existingMemories?.length) {
@@ -776,7 +2202,17 @@ function ensureSeedData() {
   if (!readStorage(STORAGE_KEYS.lifeSummaries, null)) {
     writeStorage(STORAGE_KEYS.lifeSummaries, []);
   }
+  if (!readStorage(STORAGE_KEYS.localFacts, null)) {
+    writeStorage(STORAGE_KEYS.localFacts, []);
+  }
+  if (!readStorage(STORAGE_KEYS.factDatabase, null)) {
+    writeStorage(STORAGE_KEYS.factDatabase, []);
+  }
+  if (!readStorage(STORAGE_KEYS.personAliases, null)) {
+    writeStorage(STORAGE_KEYS.personAliases, []);
+  }
   refreshLifeSummaries();
+  rebuildLocalFacts();
 }
 
 function getProfile() {
@@ -794,6 +2230,7 @@ function getMemories() {
 function setMemories(memories) {
   writeStorage(STORAGE_KEYS.memories, memories.map(normalizeMemory));
   refreshLifeSummaries();
+  rebuildLocalFacts();
   personSummaryCache.clear();
   if (activePersonName && !getMemories().some((memory) => (memory.people || []).some((item) => item.name === activePersonName))) {
     activePersonName = null;
@@ -940,7 +2377,7 @@ function buildLifeSummaries(memories = getMemories(), candidates = getMemoryCand
   });
 
   candidates
-    .filter((item) => !item.dismissed && item.memorySignal && item.timeType === 'relative')
+    .filter((item) => !item.dismissed && item.memorySignal && item.timeType === 'relative' && item.candidateType === 'timeline_memory')
     .forEach((candidate) => {
       const label = '待补人生阶段';
       if (!timeBuckets.has(label)) timeBuckets.set(label, { count: 0, moods: [], people: [] });
@@ -1094,6 +2531,7 @@ function getMemoryCandidates() {
 function setMemoryCandidates(candidates) {
   writeStorage(STORAGE_KEYS.memoryCandidates, candidates.map(normalizeMemoryCandidate));
   refreshLifeSummaries();
+  rebuildLocalFacts();
 }
 
 function removeMemoryCandidate(candidateId) {
@@ -1109,7 +2547,12 @@ function dismissMemoryCandidate(candidateId) {
 }
 
 function getCandidateLineKey(candidate) {
+  if (candidate.eventKey) return `event:${candidate.eventKey}`;
+  if ((candidate.candidateType === 'daily_fragment' || candidate.candidateType === 'event_memory') && candidate.timeType && candidate.timeType !== 'none') {
+    return `event-time:${candidate.timeType}:${candidate.timeLabel || candidate.summary || candidate.filteredText}`;
+  }
   if (candidate.people?.[0]) return `person:${candidate.people[0]}`;
+  if (candidate.candidateType === 'daily_fragment' && candidate.timeType === 'relative') return `daily-relative:${candidate.summary || candidate.filteredText}`;
   if (candidate.timeType && candidate.timeType !== 'none') return `time:${candidate.timeType}`;
   return `misc:${candidate.candidateType || 'none'}`;
 }
@@ -1149,7 +2592,7 @@ function buildConsolidatedCandidateCopy(candidate, peers = [], recap = {}) {
     };
   }
 
-  if (person && (eventCount + timelineCount + personClueCount) >= 2) {
+  if (person && personClueCount >= 2 && eventCount === 0 && timelineCount === 0) {
     return {
       summary: `最近几次都提到${person}，这条人物线已经开始慢慢聚起来了。`,
       narrative: suggestedMemory
@@ -1167,7 +2610,7 @@ function buildConsolidatedCandidateCopy(candidate, peers = [], recap = {}) {
     };
   }
 
-  if (candidate.timeType === 'relative' && count >= 2) {
+  if (candidate.timeType === 'relative' && candidate.candidateType === 'timeline_memory' && count >= 2) {
     return {
       summary: '最近几条线索都落在同一段待补时间里，可以先按人生阶段收着。',
       narrative: `这几条内容虽然还没有精确日期，但它们已经开始指向同一段时间。现在先把它们收成一条待补的人生阶段线，后面慢慢补年份、年龄或当时的生活状态就行。`,
@@ -1186,11 +2629,17 @@ function consolidateMemoryCandidate(candidate, existing = getMemoryCandidates(),
   const normalized = normalizeMemoryCandidate(candidate);
   const peers = getCandidateLinePeers(normalized, [normalized, ...existing]);
   const consolidated = buildConsolidatedCandidateCopy(normalized, peers, recap);
+  const peerPeople = uniqueStrings(peers.flatMap((item) => item.people || []).map(resolveCanonicalPersonName), 6);
+  const peerTimeRefs = peers.map((item) => normalizeTimeRef(item.timeRef)).filter((item) => item.normalizedLabel);
+  const strongestTimeRef = peerTimeRefs.sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0] || normalized.timeRef;
   return normalizeMemoryCandidate({
     ...normalized,
     ...consolidated,
+    people: uniqueStrings([...(normalized.people || []), ...peerPeople], 6),
+    timeRef: normalized.timeRef?.normalizedLabel ? normalized.timeRef : strongestTimeRef,
+    timeConfidence: Math.max(normalized.timeConfidence || 0, strongestTimeRef?.confidence || 0),
     missingPieces: uniqueStrings([
-      ...(normalized.missingPieces || []),
+      ...((normalized.missingPieces || []).filter((item) => !(item === '人物' && peerPeople.length) && !(item === '人物待确认' && peerPeople.length))),
       ...(peers.length >= 2 && normalized.timeType === 'none' && normalized.people?.[0] ? ['时间'] : [])
     ], 4)
   });
@@ -1200,6 +2649,7 @@ function upsertMemoryCandidate(candidate, recap = {}) {
   const existing = getMemoryCandidates();
   const normalized = consolidateMemoryCandidate(candidate, existing, recap);
   const match = existing.find((item) => {
+    if (normalized.eventKey && item.eventKey && normalized.eventKey === item.eventKey) return true;
     if (normalized.sourceTurnIds.length && item.sourceTurnIds.some((id) => normalized.sourceTurnIds.includes(id))) return true;
     if (
       normalized.people.length &&
@@ -1240,24 +2690,38 @@ function getCandidateClusters(candidates = getMemoryCandidates()) {
   const clusters = new Map();
 
   active.forEach((candidate) => {
-    const key = candidate.people[0]
-      ? `person:${candidate.people[0]}`
-      : candidate.timeType !== 'none'
-        ? `time:${candidate.timeType}`
-        : `misc:${candidate.candidateType}`;
+    const key = (candidate.candidateType === 'daily_fragment' || candidate.candidateType === 'event_memory') && candidate.timeType !== 'none'
+      ? `time:${candidate.timeType}`
+      : candidate.people[0]
+        ? `person:${candidate.people[0]}`
+        : candidate.timeType !== 'none'
+          ? `time:${candidate.timeType}`
+          : `misc:${candidate.candidateType}`;
     if (!clusters.has(key)) {
       clusters.set(key, {
         id: key,
-        label: candidate.people[0] || (
-          candidate.timeType === 'present'
+        label: ((candidate.candidateType === 'daily_fragment' || candidate.candidateType === 'event_memory') && candidate.timeType !== 'none')
+          ? (
+            candidate.timeType === 'present'
             ? '今天'
             : candidate.timeType === 'relative'
               ? '待补时间'
               : candidate.candidateType === 'event_memory'
                 ? '事件片段'
                 : '零散线索'
-        ),
-        type: candidate.people[0] ? 'person' : candidate.timeType !== 'none' ? 'time' : 'misc',
+          )
+          : candidate.people[0] || (
+            candidate.timeType === 'present'
+              ? '今天'
+              : candidate.timeType === 'relative'
+                ? '待补时间'
+                : candidate.candidateType === 'event_memory'
+                  ? '事件片段'
+                  : '零散线索'
+          ),
+        type: ((candidate.candidateType === 'daily_fragment' || candidate.candidateType === 'event_memory') && candidate.timeType !== 'none')
+          ? 'time'
+          : candidate.people[0] ? 'person' : candidate.timeType !== 'none' ? 'time' : 'misc',
         candidates: []
       });
     }
@@ -1311,11 +2775,13 @@ function summarizeStrategyTrail() {
 function buildRhythmState(text, retrieval) {
   const trail = getStrategyTrail().slice(0, 4);
   const currentThin = isThinMemoryText(text);
+  const shortTurnInterpretation = interpretShortTurn(text, getLastAssistantText(), retrieval.activeEvent || getActiveEventContext());
+  const answerToRecentQuestion = shortTurnInterpretation.fragmentType === 'answer_to_question';
   const currentInfoRich = !currentThin && (
     (retrieval.queryFeatures?.explicitPeople?.length || 0) > 0 ||
     (retrieval.queryFeatures?.timeRefs?.length || 0) > 0 ||
     (retrieval.memories?.[0]?.actions?.length || 0) > 0
-  );
+  ) || answerToRecentQuestion;
   const recentAskCount = trail.slice(0, 2).filter((item) => item.shouldAsk).length;
   const recentSupportCount = trail.slice(0, 2).filter((item) => item.responseMode === 'emotional_support').length;
   const recentThinCount = trail.slice(0, 2).filter((item) => item.userText && item.userText.length <= 10).length;
@@ -1323,6 +2789,8 @@ function buildRhythmState(text, retrieval) {
   return {
     currentThin,
     currentInfoRich,
+    answerToRecentQuestion,
+    shortTurnInterpretation,
     recentAskCount,
     recentSupportCount,
     recentThinCount,
@@ -1429,11 +2897,11 @@ function isShortBackchannel(text) {
 }
 
 function isCorrectionLike(text) {
-  return /^(不是|不是这个意思|你没听懂|你理解错了|我不是这个意思|不是这句|不是说这个|你又理解偏了)/.test(String(text || '').trim());
+  return /^(不是|不是这个意思|你没听懂|你理解错了|我不是这个意思|不是这句|不是说这个|你又理解偏了|不是今天，是昨天|那是昨天的|不是赵姐|不是李阿姨|不是这次，是上次|我刚刚说错了)/.test(String(text || '').trim());
 }
 
 function isMetaConversation(text) {
-  return /(你傻啊|好蠢啊|我们不是刚开始聊天吗|闲聊，不需要这么紧绷|别这么上价值|别分析我|别总结|别记录|别瞎猜|别脑补|别乱安慰)/.test(String(text || '').trim());
+  return /(你傻啊|好蠢啊|我们不是刚开始聊天吗|闲聊，不需要这么紧绷|别这么上价值|别分析我|别总结|别记录|别瞎猜|别脑补|别乱安慰|没来得及存档|没存档|看不到.*卡片整理|看不到.*忆光|点了.*忆光|没保存|稍后看|闪退|版本|稳定性|等待整理)/.test(String(text || '').trim());
 }
 
 function isMildComplaint(text) {
@@ -1453,9 +2921,10 @@ function shouldTreatAsMemorySignal(text, features = {}) {
   if (!value) return false;
   if (isGreetingLike(value) || isShortBackchannel(value) || isCorrectionLike(value) || isMetaConversation(value)) return false;
   if (value.length < 10 && !(features.explicitPeople || []).length && !(features.timeRefs || []).length) return false;
+  if ((features.timeRefs || []).length && /(吃|喝|做|红烧肉|鸡蛋羹|面条|米饭|菜|汤|好吃|记住怎么做|做法|贺卡|过生日|庆祝生日|庆生)/.test(value) && value.length >= 8) return true;
   if ((features.explicitPeople || []).length && value.length >= 8 && !isThinMemoryText(value)) return true;
   if ((features.timeRefs || []).length && value.length >= 8) return true;
-  if (/(那天|后来|当时|结果|然后|一起|回去|以前|记得|想起|怀念|惦记|挂念)/.test(value) && value.length >= 12) return true;
+  if (/(那天|后来|当时|结果|然后|一起|回去|以前|记得|想起|怀念|惦记|挂念|写(?:了)?贺卡|过生日|庆祝生日)/.test(value) && value.length >= 8) return true;
   return false;
 }
 
@@ -1563,6 +3032,41 @@ function scoreTextAgainstFeatures(text, features, weight = 1) {
   return score * weight;
 }
 
+function scoreMemoryByTimePriority(memory, features, activeEvent = null) {
+  const queryTimeRefs = features.timeRefs || [];
+  const memoryTimeRefs = uniqueStrings([memory.timelineLabel, ...(memory.timeRefs || [])], 8).filter(Boolean);
+  let score = 0;
+
+  queryTimeRefs.forEach((timeRef) => {
+    if (memoryTimeRefs.includes(timeRef)) score += 18;
+    if ((memory.content || '').includes(timeRef)) score += 8;
+  });
+
+  if (/上次|那次|昨天那次/.test(features.text || '')) {
+    if (activeEvent?.timeLabel && memoryTimeRefs.includes(activeEvent.timeLabel)) score += 12;
+    const revisedMatch = getRevisionLogs().slice(0, 6).some((item) => String(item.newValue || '').trim() && memoryTimeRefs.includes(String(item.newValue || '').trim()));
+    if (revisedMatch) score += 10;
+  }
+
+  return score;
+}
+
+function scoreMemoryByEventConstraints(memory, features) {
+  let score = 0;
+  const people = (memory.people || []).map((item) => resolveCanonicalPersonName(item.name));
+  const actions = memory.actions || [];
+  const explicitPeople = (features.explicitPeople || []).map(resolveCanonicalPersonName);
+
+  explicitPeople.forEach((name) => {
+    if (people.includes(name)) score += 14;
+  });
+  actions.forEach((action) => {
+    if (action && String(features.text || '').includes(action)) score += 9;
+  });
+
+  return score;
+}
+
 function buildMemoryRetrievalUnits(memory) {
   const units = [
     {
@@ -1603,6 +3107,8 @@ function buildMemoryRetrievalUnits(memory) {
 function scoreMemory(memory, features) {
   const haystack = getMemorySearchText(memory);
   let score = scoreTextAgainstFeatures(haystack, features, 1);
+  score += scoreMemoryByTimePriority(memory, features, getActiveEventContext());
+  score += scoreMemoryByEventConstraints(memory, features);
 
   const peopleNames = (memory.people || []).map((item) => item.name);
   peopleNames.forEach((name) => {
@@ -1641,19 +3147,35 @@ function scoreMemory(memory, features) {
 function retrieveRelevantMemories(queryText) {
   const profile = getProfile();
   const features = buildQueryFeatures(queryText, profile);
-  return getMemories()
+  const activeEvent = getActiveEventContext();
+  const scored = getMemories()
     .map((memory) => {
       const result = scoreMemory(memory, features);
+      const timeScore = scoreMemoryByTimePriority(memory, features, activeEvent);
+      const eventScore = scoreMemoryByEventConstraints(memory, features);
       return {
         memory: {
           ...memory,
           retrievalHits: result.hits
         },
-        score: result.score
+        score: result.score,
+        timeScore,
+        eventScore
       };
-    })
+    });
+
+  const hasExplicitTime = (features.timeRefs || []).length > 0;
+  const timeMatched = hasExplicitTime ? scored.filter((item) => item.timeScore > 0) : scored;
+  const eventMatched = timeMatched.filter((item) => item.eventScore > 0);
+  const pool = hasExplicitTime
+    ? (eventMatched.length ? eventMatched : timeMatched.length ? timeMatched : scored)
+    : scored;
+
+  return pool
     .filter((item) => item.score > 4.2)
     .sort((a, b) => {
+      if (b.timeScore !== a.timeScore) return b.timeScore - a.timeScore;
+      if (b.eventScore !== a.eventScore) return b.eventScore - a.eventScore;
       if (b.score !== a.score) return b.score - a.score;
       const timeA = a.memory.timelineDate || '';
       const timeB = b.memory.timelineDate || '';
@@ -1668,6 +3190,20 @@ function retrieveRelevantMemories(queryText) {
 
 function retrieveRelevantProfileSignals(queryText, profile = getProfile()) {
   const features = buildQueryFeatures(queryText, profile);
+  const localFacts = getLocalFacts()
+    .filter((item) => item.verificationStatus === 'verified')
+    .map((item) => ({
+      type: item.factType === 'relationship_pattern' ? '重要人物事实' : item.factType === 'life_theme_fact' ? '生活主题事实' : '长期事实',
+      value: item.label
+    }));
+  const verifiedFacts = getVerifiedFacts()
+    .filter((item) => item.factType === 'alias_fact' || item.factType === 'event_slot_fact')
+    .map((item) => ({
+      type: item.factType === 'alias_fact' ? '已验证人物别名' : '已验证事件事实',
+      value: item.factType === 'alias_fact'
+        ? `${item.object}｜别名：${item.aliases.filter((alias) => alias !== item.object).join('、') || '无'}`
+        : `${item.predicate}：${item.object}`
+    }));
   const candidates = [
     ...(profile.speakingStyle ? [{ type: '说话习惯', value: profile.speakingStyle }] : []),
     ...(profile.worldview ? [{ type: '看法', value: profile.worldview }] : []),
@@ -1676,7 +3212,9 @@ function retrieveRelevantProfileSignals(queryText, profile = getProfile()) {
     ...(profile.habits || []).map((value) => ({ type: '习惯', value })),
     ...(profile.goals || []).map((value) => ({ type: '目标', value })),
     ...(profile.importantPeople || []).map((value) => ({ type: '重要人物', value })),
-    ...(profile.keyMemories || []).map((value) => ({ type: '长期记忆', value }))
+    ...(profile.keyMemories || []).map((value) => ({ type: '长期记忆', value })),
+    ...localFacts,
+    ...verifiedFacts
   ];
 
   return candidates
@@ -1726,6 +3264,7 @@ function buildChatRetrieval(queryText) {
   const profile = getProfile();
   const memories = retrieveRelevantMemories(queryText);
   const profileSignals = retrieveRelevantProfileSignals(queryText, profile);
+  const verifiedFacts = getVerifiedFacts().slice(0, 8);
   const lifeSummaries = retrieveRelevantLifeSummaries(queryText);
   const queryFeatures = buildQueryFeatures(queryText, profile);
   const pendingTimeQuestions = memories
@@ -1735,6 +3274,7 @@ function buildChatRetrieval(queryText) {
   const understanding = buildUnderstandingLayers(queryText, {
     memories,
     profileSignals,
+    verifiedFacts,
     lifeSummaries,
     queryFeatures
   });
@@ -1746,6 +3286,7 @@ function buildChatRetrieval(queryText) {
     lifeSummaries,
     queryFeatures,
     understanding,
+    activeEvent: getActiveEventContext(),
     pendingTimeQuestions,
     recentConversation: buildConversationContext()
   };
@@ -3016,6 +4557,69 @@ function getLastAssistantText() {
   return String(lastAssistant?.content || '').trim();
 }
 
+function inferQuestionSlot(questionText = '') {
+  const value = String(questionText || '').trim();
+  if (!value) return 'none';
+  if (/(哪种|什么口味|哪一款|哪杯|喜欢喝什么|喜欢哪种)/.test(value)) return 'preference';
+  if (/(谁|哪位|哪个人|叫什么)/.test(value)) return 'person';
+  if (/(什么时候|几点|哪天|昨天还是今天|上午还是晚上)/.test(value)) return 'time';
+  if (/(做什么|干什么|去做什么|去干嘛|是什么事)/.test(value)) return 'action';
+  if (/(哪里|哪儿|在哪|去哪里)/.test(value)) return 'location';
+  return 'none';
+}
+
+function interpretShortTurn(text, lastAssistant = getLastAssistantText(), activeEvent = getActiveEventContext()) {
+  const value = String(text || '').trim();
+  const question = String(lastAssistant || '').trim();
+  const slot = inferQuestionSlot(question);
+  if (!value) {
+    return {
+      fragmentType: 'empty',
+      targetSlot: 'none',
+      resolvedValue: '',
+      confidence: 0
+    };
+  }
+  if (isGreetingLike(value)) {
+    return { fragmentType: 'greeting', targetSlot: 'none', resolvedValue: value, confidence: 1 };
+  }
+  if (isMetaConversation(value)) {
+    return { fragmentType: 'meta_conversation', targetSlot: 'none', resolvedValue: value, confidence: 1 };
+  }
+  if (isCorrectionLike(value)) {
+    return { fragmentType: 'revision_fragment', targetSlot: slot, resolvedValue: value, confidence: 0.94 };
+  }
+  if (isShortBackchannel(value)) {
+    return { fragmentType: 'backchannel', targetSlot: 'none', resolvedValue: value, confidence: 0.96 };
+  }
+  if (question && slot !== 'none' && value.length <= 16 && !/[，。！？!?]/.test(value)) {
+    return {
+      fragmentType: 'answer_to_question',
+      targetSlot: slot,
+      resolvedValue: value,
+      confidence: 0.9
+    };
+  }
+  if (activeEvent?.summary && value.length <= 12 && !/[，。！？!?]/.test(value)) {
+    return {
+      fragmentType: 'event_follow_up',
+      targetSlot: activeEvent.actions?.length ? 'action' : activeEvent.people?.length ? 'person' : activeEvent.timeLabel ? 'time' : 'none',
+      resolvedValue: value,
+      confidence: 0.76
+    };
+  }
+  return {
+    fragmentType: 'full_sentence',
+    targetSlot: slot,
+    resolvedValue: value,
+    confidence: 0.52
+  };
+}
+
+function isAnswerToRecentQuestion(text, lastAssistant = getLastAssistantText()) {
+  return interpretShortTurn(text, lastAssistant).fragmentType === 'answer_to_question';
+}
+
 function fallbackReply(text, emotion, memories) {
   const companionName = getSettings().companionName;
   const retrieved = memories[0];
@@ -3043,6 +4647,9 @@ function fallbackReply(text, emotion, memories) {
   if (isCorrectionLike(value)) {
     return '是，我刚才理解偏了。你按你本来的意思再说一句，我这次只照着你的字面听。';
   }
+  if (isAnswerToRecentQuestion(value, lastAssistant)) {
+    return `${value}啊，听起来这是你会专门记住的一杯。`;
+  }
   if (isShortBackchannel(value) || (value.length <= 6 && !/[，。！？!?]/.test(value))) {
     return lastAssistant.includes('不急着替你下判断')
       ? '嗯，我跟着听。你要是只想随口说一句，也可以。'
@@ -3063,10 +4670,13 @@ function fallbackReply(text, emotion, memories) {
   return '我在认真听。你先按你想说的方式说就行，不用一下子说得很完整。';
 }
 
-function sanitizeAssistantReply(reply, userText, retrieval) {
+function sanitizeAssistantReply(reply, userText, retrieval, replyPlan = {}) {
   let output = String(reply || '').trim();
   const value = String(userText || '').trim();
   const responseMode = retrieval?.understanding?.responseMode || 'chatting';
+  const shouldAvoidMemoryRecall = Boolean(replyPlan?.shouldAvoidMemoryRecall);
+  const activeEvent = retrieval?.activeEvent || null;
+  const recentQuestionAnswer = isAnswerToRecentQuestion(value);
 
   if (!output) return output;
 
@@ -3090,9 +4700,14 @@ function sanitizeAssistantReply(reply, userText, retrieval) {
   const unsupportedPeople = Array.from(output.matchAll(/(?:赵姐|外孙|老伴|女儿|儿子|学生|爱人)/g)).map((item) => item[0]);
   const allowedPeople = new Set([
     ...(retrieval?.queryFeatures?.explicitPeople || []),
+    ...((activeEvent?.people) || []),
     ...((retrieval?.memories || []).flatMap((memory) => (memory.people || []).map((item) => item.name)))
   ]);
   if (unsupportedPeople.some((name) => !allowedPeople.has(name) && !value.includes(name))) {
+    output = '';
+  }
+
+  if (shouldAvoidMemoryRecall && /赵姐|李阿姨|跳广场舞|出门|上次那件|之前那件|记得你提过|你之前提过/.test(output) && !value.match(/赵姐|李阿姨|跳广场舞|出门/)) {
     output = '';
   }
 
@@ -3108,17 +4723,42 @@ function sanitizeAssistantReply(reply, userText, retrieval) {
     output = '';
   }
 
+  if (replyPlan?.isActiveEventFollowUp && activeEvent?.summary) {
+    const anchorTerms = uniqueStrings([
+      ...(activeEvent.people || []),
+      ...(activeEvent.actions || []),
+      activeEvent.timeLabel || '',
+      ...tokenize(value).filter((token) => token.length >= 2)
+    ], 12);
+    const hasEventAnchor = anchorTerms.some((token) => token && output.includes(token));
+    const isGenericFollowUp = /我在听|慢慢接着说|不用一下子说得很完整|不急着替你下判断/.test(output);
+    if (isGenericFollowUp && !hasEventAnchor) {
+      output = '';
+    }
+  }
+
   const userTokens = tokenize(value).filter((token) => token.length >= 2);
   const replyTokens = tokenize(output).filter((token) => token.length >= 2);
   if (userTokens.length && replyTokens.length) {
     const overlap = userTokens.filter((token) => replyTokens.includes(token)).length / userTokens.length;
     const hasJudgment = /我觉得|我看|我先|更像|不一定|可以先|先别|不急着|先说|慢慢说/.test(output);
-    if (overlap >= 0.8 && !hasJudgment) {
+    if (overlap >= 0.8 && !hasJudgment && !recentQuestionAnswer) {
       output = '';
     }
   }
 
   return output.trim();
+}
+
+function enforceReplyPlan(reply, userText, retrieval, replyPlan = {}) {
+  const output = String(reply || '').trim();
+  if (replyPlan.needsConfirmation && replyPlan.confirmationPrompt) {
+    return replyPlan.confirmationPrompt;
+  }
+  if (replyPlan.consistencyWarnings?.length && !/\?|？/.test(output)) {
+    return `${replyPlan.consistencyWarnings[0]} ${replyPlan.confirmationPrompt || '我先确认一下，我刚才是不是接错了？'}`.trim();
+  }
+  return output;
 }
 
 function readableMemoryTitle(memory) {
@@ -3157,6 +4797,99 @@ function getMemoryExportText(history) {
   return compactText(combined, 400) || '';
 }
 
+function gradeMemorySafety(memory, retrieval, replyPlan = {}) {
+  const features = retrieval?.queryFeatures || {};
+  const activeEvent = retrieval?.activeEvent || getActiveEventContext();
+  const people = (memory.people || []).map((item) => resolveCanonicalPersonName(item.name));
+  const actions = memory.actions || [];
+  const timeLabels = uniqueStrings([memory.timelineLabel, ...(memory.timeRefs || [])], 6).filter(Boolean);
+  const directPersonHit = people.some((name) => (features.explicitPeople || []).map(resolveCanonicalPersonName).includes(name));
+  const directTimeHit = timeLabels.some((label) => (features.timeRefs || []).includes(label));
+  const directActionHit = actions.some((action) => String(features.text || '').includes(action));
+  const activeEventHit = activeEvent?.summary && (
+    people.some((name) => (activeEvent.people || []).map(resolveCanonicalPersonName).includes(name))
+    || actions.some((action) => (activeEvent.actions || []).includes(action))
+    || timeLabels.some((label) => label === activeEvent.timeLabel)
+  );
+
+  if (!replyPlan.shouldAvoidMemoryRecall && (directPersonHit || directTimeHit || directActionHit || activeEventHit)) {
+    return { level: 'A', note: '可直接说的当前强锚点记忆' };
+  }
+  if (!replyPlan.shouldAvoidMemoryRecall && (memory.retrievalHits || []).length) {
+    return { level: 'B', note: '只能保守说的弱相关记忆' };
+  }
+  return { level: 'C', note: '只可内部参考，不直接说' };
+}
+
+function buildReplyEvidenceLanes(text, retrieval, replyPlan = {}) {
+  const memoryLanes = (retrieval.memories || []).map((memory) => ({
+    ...memory,
+    safety: gradeMemorySafety(memory, retrieval, replyPlan)
+  }));
+  const laneA = memoryLanes.filter((item) => item.safety.level === 'A');
+  const laneB = memoryLanes.filter((item) => item.safety.level === 'B');
+  const laneC = [
+    ...(retrieval.lifeSummaries || []).map((item) => ({ type: 'life_summary', label: item.label, summary: item.summary })),
+    ...getFactDatabase().filter((item) => item.verificationStatus !== 'verified').slice(0, 6)
+  ];
+  return { laneA, laneB, laneC };
+}
+
+function runReplySafetyCheck(reply, userText, retrieval, replyPlan = {}) {
+  const output = String(reply || '').trim();
+  const issues = [];
+  const recentRevisions = getRevisionLogs().slice(0, 8);
+
+  if (!output) {
+    issues.push('empty_reply');
+  }
+
+  const reusedOldRevision = recentRevisions.some((item) => {
+    if (!item.oldValue) return false;
+    if (Array.isArray(item.oldValue)) return item.oldValue.some((value) => String(value || '').trim() && output.includes(String(value || '').trim()));
+    return output.includes(String(item.oldValue || '').trim());
+  });
+  if (reusedOldRevision) {
+    issues.push('uses_revised_old_info');
+  }
+
+  if ((replyPlan.needsConfirmation || replyPlan.replyTimeStrategy === 'acknowledge_uncertainty' || replyPlan.consistencyWarnings?.length)
+    && /(就是|肯定|当然|确实是|一定是)/.test(output)
+    && !/(可能|像是|我先确认一下|对吗|是不是|也许|不敢说死)/.test(output)) {
+    issues.push('overstates_low_confidence');
+  }
+
+  if (/(你总是|你一直|你向来|你平时都|老是这样)/.test(output)) {
+    issues.push('single_event_as_long_term_fact');
+  }
+
+  if ((replyPlan.responseMode === 'small_talk' || replyPlan.responseMode === 'chatting' || replyPlan.shouldAvoidMemoryRecall)
+    && /[？?].*[？?]|为什么|怎么会/.test(output)) {
+    issues.push('over_probe_when_should_hold');
+  }
+
+  return {
+    ok: issues.length === 0,
+    issues
+  };
+}
+
+function downgradeReplyBySafety(userText, retrieval, replyPlan = {}, issues = []) {
+  if (replyPlan.needsConfirmation && replyPlan.confirmationPrompt) {
+    return replyPlan.confirmationPrompt;
+  }
+  if (issues.includes('uses_revised_old_info') && replyPlan.correctionType !== 'none') {
+    return '是，我先按你刚纠正过的意思来，不沿着前面那句往下接。';
+  }
+  if (issues.includes('overstates_low_confidence')) {
+    return replyPlan.confirmationPrompt || '这点我先不敢说死，我先按保守一点的理解放着。';
+  }
+  if (issues.includes('over_probe_when_should_hold') || replyPlan.shouldAvoidMemoryRecall) {
+    return '好，这轮我先不往旧事上接，就照着你刚说的这句陪你聊。';
+  }
+  return fallbackReply(userText, detectEmotion(userText), retrieval?.memories || []);
+}
+
 function candidateToDraftText(candidate) {
   if (!candidate) return '';
   return [candidate.summary, candidate.filteredText].filter(Boolean).join('。');
@@ -3171,9 +4904,10 @@ async function requestAI(text, retrieval, replyPlan = buildLocalReplyPlan(text, 
     role: item.role,
     content: item.content
   }));
+  const evidenceLanes = buildReplyEvidenceLanes(text, retrieval, replyPlan);
   const voiceSamples = buildUserVoiceSamples();
-  const memoryContext = retrieval.memories.length
-    ? retrieval.memories.map((memory) => [
+  const memoryContext = evidenceLanes.laneA.length
+    ? evidenceLanes.laneA.map((memory) => [
       `篇章：${memory.title}`,
       `概括：${memory.summary || memory.content.slice(0, 48)}`,
       `人物：${(memory.people || []).map((item) => item.name).join('、') || '无'}`,
@@ -3183,7 +4917,18 @@ async function requestAI(text, retrieval, replyPlan = buildLocalReplyPlan(text, 
       `命中片段：${(memory.retrievalHits || []).map((item) => `${item.type}:${item.text}`).join(' | ') || '无'}`,
       `内容：${memory.content}`
     ].join('；')).join('\n')
-    : '暂无已召回篇章。';
+    : '暂无 A 级可直说篇章。';
+  const conservativeMemoryContext = evidenceLanes.laneB.length
+    ? evidenceLanes.laneB.map((memory) => [
+      `篇章：${memory.title}`,
+      `概括：${memory.summary || compactText(memory.content, 48)}`,
+      `安全级别：B`,
+      `要求：只能保守提，不可说死，不可补细节`
+    ].join('；')).join('\n')
+    : '暂无 B 级保守篇章。';
+  const internalOnlyContext = evidenceLanes.laneC.length
+    ? evidenceLanes.laneC.map((item) => item.summary || item.label || item.object || '').filter(Boolean).join('\n')
+    : '暂无 C 级内部参考。';
   const profileContext = [
     profile.speakingStyle ? `她最近的说话习惯：${profile.speakingStyle}` : '',
     profile.worldview ? `她比较稳定的看法和价值取向：${profile.worldview}` : '',
@@ -3202,6 +4947,9 @@ async function requestAI(text, retrieval, replyPlan = buildLocalReplyPlan(text, 
   const profileSignalContext = retrieval.profileSignals.length
     ? retrieval.profileSignals.map((item) => `${item.type}：${item.value}`).join('\n')
     : '暂无额外命中的长期画像。';
+  const verifiedFactContext = retrieval.verifiedFacts?.length
+    ? retrieval.verifiedFacts.map((item) => `${item.factType}｜${item.predicate}｜${item.object}｜verified`).join('\n')
+    : '暂无已验证事实。';
   const lifeSummaryContext = retrieval.lifeSummaries?.length
     ? retrieval.lifeSummaries.map((item) => `${item.type}:${item.label}｜${item.summary}`).join('\n')
     : '暂无命中的人生线摘要。';
@@ -3210,6 +4958,8 @@ async function requestAI(text, retrieval, replyPlan = buildLocalReplyPlan(text, 
     : '暂无待补时间问题。';
   const strategyTrailContext = summarizeStrategyTrail();
   const rhythm = buildRhythmState(text, retrieval);
+  const timeAnchor = buildTimeAnchor();
+  const activeEvent = retrieval.activeEvent || getActiveEventContext();
 
   const prompt = [
     '# 角色',
@@ -3242,28 +4992,65 @@ async function requestAI(text, retrieval, replyPlan = buildLocalReplyPlan(text, 
     '不要动不动使用“听起来你……”“是不是因为……”这类心理推断句式，除非用户已经明确说出了那个情绪或原因。',
     '',
     '# 当前情境',
+    `- 当前日期：${timeAnchor.currentDate}`,
+    `- 当前时区：${timeAnchor.timezone}`,
+    `- 昨天对应日期：${timeAnchor.yesterday}`,
     `- 用户情绪：${emotion}`,
     `- 对话意图：${intent}`,
     `- 回应策略：${replyPlan.responseMode || retrieval.understanding?.responseMode || 'chatting'}`,
+    `- 回复控制策略：${replyPlan.replyStrategy || 'continue_event'}`,
     `- 这一轮你的判断：${replyPlan.selfJudgment || '先自然接话'}`,
     `- 这一轮回复目标：${replyPlan.replyGoal || '先接住用户这句话'}`,
+    `- 是否元对话：${replyPlan.isMetaConversation ? '是' : '否'}`,
+    `- 是否应避免召回旧记忆：${replyPlan.shouldAvoidMemoryRecall ? '是' : '否'}`,
+    `- 是否存在时间冲突：${replyPlan.hasTimeConflict ? '是' : '否'}`,
+    `- 时间冲突检测：${replyPlan.conflictDetected ? '是' : '否'}`,
+    `- 是否需要修订旧时间：${replyPlan.revisionNeeded ? '是' : '否'}`,
+    `- 是否存在人物冲突：${replyPlan.hasEntityConflict ? '是' : '否'}`,
+    `- 是否需要反向确认：${replyPlan.needsConfirmation ? '是' : '否'}`,
+    `- 反向确认问题：${replyPlan.confirmationPrompt || '无'}`,
+    `- 一致性提醒：${replyPlan.consistencyWarnings?.join('｜') || '无'}`,
+    `- 当前相对时间锚：${replyPlan.timeAnchorLabel || '无'}`,
+    `- 相对时间解析结果：${replyPlan.resolvedRelativeTime || '无'}`,
+    `- 时间使用策略：${replyPlan.replyTimeStrategy || 'no_time_anchor'}`,
+    `- 时间对象：${replyPlan.timeRef ? JSON.stringify(replyPlan.timeRef) : '无'}`,
+    `- 短句类型：${replyPlan.shortTurnType || 'none'}`,
+    `- 短句目标槽位：${replyPlan.targetSlot || 'none'}`,
+    `- 短句解析值：${replyPlan.resolvedValue || '无'}`,
     `- 明确提到的人物：${retrieval.queryFeatures?.explicitPeople?.join('、') || '无'}`,
     `- 明确提到的时间：${retrieval.queryFeatures?.timeRefs?.join('、') || '无'}`,
     `- 最近几轮策略：\n${strategyTrailContext}`,
     `- 当前节奏状态：最近追问 ${rhythm.recentAskCount} 次；最近情绪支持 ${rhythm.recentSupportCount} 次；最近短回应 ${rhythm.recentThinCount} 次；本轮${rhythm.currentInfoRich ? '有新信息' : '信息较少'}。`,
     '',
-    '# 可以参考的素材（按可信度排序）',
-    '1. 【召回内容】（最可信，但不可编造）',
+    '# 可以参考的素材（按安全等级排序）',
+    '1. 【A 级：可直接说】（必须有当前强锚点）',
     memoryContext,
     '',
-    '2. 【最近对话】（用于接续语境）',
+    '2. 【B 级：只能保守说】（只能说“像是、可能和这条有关”，不能说死）',
+    conservativeMemoryContext,
+    '',
+    '3. 【最近对话】（用于接续语境）',
     retrieval.recentConversation || '无',
     '',
-    '3. 【待补问题】（若真的需要追问，只选其中一条）',
+    '4. 【待补问题】（若真的需要追问，只选其中一条）',
     pendingQuestionContext,
     '',
-    '4. 【用户表达样本】（仅参考语气轻重和节奏）',
+    '5. 【当前活跃事件】（如果这一轮只是短补充，应优先接着这件事说）',
+    activeEvent?.summary ? [
+      `当前活跃事件：${activeEvent.summary}`,
+      `相关人物：${activeEvent.people?.join('、') || '无'}`,
+      `相关动作：${activeEvent.actions?.join('、') || '无'}`,
+      `相关时间：${activeEvent.timeLabel || activeEvent.resolvedDate || '无'}`
+    ].join('\n') : '暂无明确活跃事件。',
+    '',
+    '6. 【用户表达样本】（仅参考语气轻重和节奏）',
     voiceSamples || '无',
+    '',
+    '# 已验证事实（高于长期画像，能用才用）',
+    verifiedFactContext,
+    '',
+    '# C 级内部参考（只能帮助你判断，不可以直接说出来）',
+    internalOnlyContext,
     '',
     '# 长期用户画像（辅助理解，不作为事实来源）',
     profileContext || '无',
@@ -3278,11 +5065,25 @@ async function requestAI(text, retrieval, replyPlan = buildLocalReplyPlan(text, 
     '如果这轮信息很少，就陪伴、接话，不借题发挥。',
     '不要只是换个说法重复用户原句。每次回复至少提供一种新价值：接住情绪、给出判断、帮她理顺、或提出一个具体小问题。',
     '如果你没有新的判断，就宁可简短陪伴，也不要复读。',
+    'A 级素材可以自然引用；B 级素材只能保守提及，例如“像是和之前那条有关”；C 级素材绝对不能直接说出来。',
     '如果最近一两轮已经连续追问过，这一轮优先收一收，除非用户明显主动继续展开。',
     '如果最近两轮都更偏情绪支持，就不要突然切成分析或整理口气。',
     '如果最近连续是短回应，或者这一轮也没有多少新信息，就降低整理欲望，先当普通聊天接住。',
     '如果用户在纠正你，比如说“你没听懂”“我不是这个意思”，要立刻退回字面理解，先承认刚才理解偏了，再只根据用户刚说的内容回应。',
     '如果用户只是轻微吐槽或说“烦、无语、无聊”，先当普通聊天接住，最多顺手问一个非常具体的小问题，不要立刻进入安抚模式。',
+    '如果这一轮是元对话、产品反馈、存档问题、看不到卡片整理、点了忆光但没保存之类的内容，不要主动召回旧生活事件，也不要擅自猜“是不是赵姐那件事”。',
+    '如果这一轮出现了时间纠正，例如“不是今天，是昨天”“那是昨天的”，先承认时间修正，再沿着新的时间锚回应。',
+    '如果 replyTimeStrategy 是 revise_active_event_time，先明确收回旧时间，再只沿新的时间解释回应。',
+    '如果 replyTimeStrategy 是 use_relative_label_only，只能使用相对时间原词，不要私自补具体时辰或年份。',
+    '如果 replyTimeStrategy 是 acknowledge_uncertainty，要承认时间仍有点模糊，不能装作已经完全确认。',
+    '如果 shortTurnType 是 answer_to_question，先把它当成上一轮问题的答案，不要再按“薄输入”或“附和句”处理。',
+    '如果 shortTurnType 是 event_follow_up，优先把它接回当前活跃事件，不要重新开话题。',
+    '如果 shortTurnType 是 revision_fragment，优先当成修订，不要按普通叙述句处理。',
+    '如果这一轮出现了人物纠正，例如“不是赵姐，是李阿姨”，先承认人物修正，之后不要继续沿用旧人物。',
+    '如果系统标记了 needsConfirmation=true，优先直接做一个温和确认，不要装作自己已经确定。',
+    '如果系统给出了一致性提醒，先说明哪里不一致，再问一个确认问题，不要直接替用户裁定。',
+    '如果人物还只是“她/他/那位”，不要把代词当成已经确认的人物实体。',
+    '如果当前有明确活跃事件，而用户这一轮只是一个很短的补充词，例如“广场舞”“舒服”“后来”“就那样”，优先把它理解为在补充上一件事，不要把它当成重新开话题。',
     '你可以参考“人生线摘要”判断这句话更像人物线、时间线还是心绪线，但不能把摘要里的概括展开成用户没有说过的新事实。',
     '当回应策略是 small_talk 或 emotional_support 时，优先接话和情感支持，不要主动整理成记忆，也不要强行追问时间。',
     '当回应策略是 relationship_signal 时，可以顺着当前人物自然聊一句，但不要立刻当成完整回忆。',
@@ -3325,7 +5126,9 @@ async function talk() {
   const emotion = detectEmotion(text);
   const retrieval = buildChatRetrieval(text);
   const memories = retrieval.memories;
-  const replyPlan = await requestReplyPlan(text, retrieval);
+  const replyPlan = shouldUseFastReplyPlan(text, retrieval)
+    ? buildLocalReplyPlan(text, retrieval)
+    : await requestReplyPlan(text, retrieval);
   const responseMode = replyPlan.responseMode || retrieval.understanding?.responseMode || 'chatting';
   const rhythm = buildRhythmState(text, retrieval);
   setStageMode(emotion === '难过' ? 'comfort' : emotion === '怀念' ? 'reminisce' : 'listening');
@@ -3345,7 +5148,12 @@ async function talk() {
   try {
     setStageMode('thinking');
     const reply = await requestAI(text, retrieval, replyPlan);
-    const finalReply = sanitizeAssistantReply(reply, text, retrieval) || fallbackReply(text, emotion, memories);
+    const constrainedReply = enforceReplyPlan(reply, text, retrieval, replyPlan);
+    const sanitizedReply = sanitizeAssistantReply(constrainedReply, text, retrieval, replyPlan) || fallbackReply(text, emotion, memories);
+    const safetyCheck = runReplySafetyCheck(sanitizedReply, text, retrieval, replyPlan);
+    const finalReply = safetyCheck.ok
+      ? sanitizedReply
+      : downgradeReplyBySafety(text, retrieval, replyPlan, safetyCheck.issues);
     history.push({
       role: 'assistant',
       content: finalReply,
@@ -3353,8 +5161,6 @@ async function talk() {
     });
     setChatHistory(history);
     renderChatHistory();
-    const recap = await requestChatRecap(text, finalReply, retrieval);
-    const memoryCandidate = await requestMemoryFilter(text, retrieval, replyPlan);
     pushStrategyTrail({
       responseMode: replyPlan.responseMode,
       selfJudgment: replyPlan.selfJudgment,
@@ -3363,15 +5169,11 @@ async function talk() {
       userText: text,
       infoRich: rhythm.currentInfoRich
     });
-    setLastChatRecap(recap);
-    if (memoryCandidate.memorySignal && memoryCandidate.summary) {
-      upsertMemoryCandidate(memoryCandidate, recap);
-      renderMemoryCueFloat();
-    } else {
-      renderMemoryCueFloat();
-    }
-    setCompanionStatus(recap.selfJudgment || replyPlan.selfJudgment || recap.status);
-    setAmbientQuote(recap.quote || memories[0]?.title || '有些故事不急着说完，今天也可以只说一小段。');
+    setCompanionStatus(replyPlan.selfJudgment || '她正在认真接住你这句话');
+    setAmbientQuote(memories[0]?.title || '有些故事不急着说完，今天也可以只说一小段。');
+    updateActiveEventContextFromTurn(text, retrieval, replyPlan);
+    const fallbackRecap = buildConversationRecap(text, retrieval);
+    schedulePostReplyProcessing(() => processReplySideEffects(text, finalReply, retrieval, replyPlan, fallbackRecap));
   } catch (error) {
     const finalReply = fallbackReply(text, emotion, memories);
     history.push({
@@ -3392,15 +5194,16 @@ async function talk() {
       userText: text,
       infoRich: rhythm.currentInfoRich
     });
-    setLastChatRecap(recap);
-    if (memoryCandidate.memorySignal && memoryCandidate.summary) {
-      upsertMemoryCandidate(memoryCandidate, recap);
-      renderMemoryCueFloat();
-    } else {
-      renderMemoryCueFloat();
-    }
     setCompanionStatus(replyPlan.selfJudgment || recap.status);
     setAmbientQuote(recap.quote);
+    updateActiveEventContextFromTurn(text, retrieval, replyPlan);
+    schedulePostReplyProcessing(async () => {
+      setLastChatRecap(recap);
+      if (memoryCandidate.memorySignal && memoryCandidate.summary) {
+        upsertMemoryCandidate(memoryCandidate, recap);
+      }
+      renderMemoryCueFloat();
+    });
   }
 
   setChatHistory(history);
@@ -3477,7 +5280,7 @@ function renderMemoryCandidates() {
       ${(candidate.narrative || candidate.filteredText) ? `<p>${escapeHtml(candidate.narrative || candidate.filteredText)}</p>` : ''}
       <div class="memory-candidate-meta">
         ${(candidate.people || []).map((name) => `<span><strong>人物</strong>${escapeHtml(name)}</span>`).join('')}
-        ${candidate.timeType && candidate.timeType !== 'none' ? `<span><strong>时间</strong>${escapeHtml(candidate.timeType === 'present' ? '今天/刚刚' : candidate.timeType === 'relative' ? '相对时间' : candidate.timeType === 'exact' ? '确切时间' : '待补')}</span>` : ''}
+        ${candidate.timeType && candidate.timeType !== 'none' ? `<span><strong>时间</strong>${escapeHtml(candidate.timeRef?.normalizedLabel || (candidate.timeType === 'present' ? '今天/刚刚' : candidate.timeType === 'relative' ? '相对时间' : candidate.timeType === 'exact' ? '确切时间' : '待补'))}</span>` : ''}
       </div>
       ${(candidate.missingPieces || []).length ? `<div class="memory-candidate-missing">还缺：${escapeHtml(candidate.missingPieces.join('、'))}</div>` : ''}
       ${candidate.followUpHint ? `<div class="memory-follow-up">${escapeHtml(candidate.followUpHint)}</div>` : ''}
