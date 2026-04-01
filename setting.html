@@ -15,10 +15,10 @@
       <aside class="page-archive">
         <div class="page-title">
           <span class="page-kicker">书签</span>
-          <h1>把她调成更像你愿意靠近的样子</h1>
+          <h1>这里不是第一次开始的地方，只是改一改已经有的卡片</h1>
         </div>
         <p class="settings-copy">
-          这些设置不会直接暴露给用户界面，它们只是让陪伴的语气、颜色和关系感更贴近你想要的感觉。
+          名字、照片、温伴形象和几个基本开关，都可以在这里慢慢改。
         </p>
       </aside>
 
@@ -26,7 +26,7 @@
         <div class="page-head">
           <div>
             <span class="page-kicker">细节</span>
-            <h2>调一调这本书的气质</h2>
+            <h2>把你和温伴的卡片放顺一点</h2>
           </div>
           <div class="head-links">
             <a href="index.html">封面</a>
@@ -34,58 +34,36 @@
           </div>
         </div>
 
+        <section class="user-card-panel">
+          <div class="avatar-config-copy">
+            <span class="page-kicker">使用者</span>
+            <h3>这是你的卡片</h3>
+            <p>这张照片属于你自己，不是回忆照片墙里的内容。</p>
+          </div>
+          <div class="avatar-preview-card">
+            <img class="companion-avatar-image settings-avatar-image" data-user-photo hidden />
+            <div class="avatar-preview-copy">
+              <strong data-user-name>你</strong>
+              <p>这张照片会用于首次进入、封面和设置页展示。</p>
+              <span id="userCardStatus">还没有放个人照片</span>
+            </div>
+          </div>
+          <div class="avatar-config-grid">
+            <label class="wide">
+              <span>更新你的照片</span>
+              <input id="userPhotoUploadInput" type="file" accept="image/*" capture="user" />
+            </label>
+          </div>
+        </section>
+
         <div class="settings-grid">
           <label>
-            <span>陪伴对象称呼</span>
+            <span>你的名字</span>
             <input id="profileNameInput" type="text" />
           </label>
           <label>
-            <span>她记得你的身份</span>
-            <input id="profileRoleInput" type="text" />
-          </label>
-          <label class="wide">
-            <span>她会常常提到的生活关系</span>
-            <textarea id="profileFamilyInput"></textarea>
-          </label>
-          <label class="wide">
-            <span>更适合被温柔接住的话题</span>
-            <textarea id="profilePreferencesInput"></textarea>
-          </label>
-          <label class="wide">
             <span>你希望她说话的感觉</span>
             <input id="profileToneInput" type="text" />
-          </label>
-          <label class="wide">
-            <span>你的说话习惯</span>
-            <input id="profileSpeakingStyleInput" type="text" />
-          </label>
-          <label class="wide">
-            <span>你的看法和价值取向</span>
-            <textarea id="profileWorldviewInput"></textarea>
-          </label>
-          <label class="wide">
-            <span>你明确喜欢的事</span>
-            <textarea id="profileLikesInput"></textarea>
-          </label>
-          <label class="wide">
-            <span>你的习惯</span>
-            <textarea id="profileHabitsInput"></textarea>
-          </label>
-          <label class="wide">
-            <span>你当前在意的目标</span>
-            <textarea id="profileGoalsInput"></textarea>
-          </label>
-          <label class="wide">
-            <span>你明确不喜欢的事</span>
-            <textarea id="profileDislikesInput"></textarea>
-          </label>
-          <label class="wide">
-            <span>你常提到的重要人物</span>
-            <textarea id="profilePeopleInput"></textarea>
-          </label>
-          <label class="wide">
-            <span>希望她长期记住的回忆主题</span>
-            <textarea id="profileMemoriesInput"></textarea>
           </label>
           <label>
             <span>她的名字</span>
@@ -104,7 +82,52 @@
               <option value="21px">大字 21px</option>
             </select>
           </label>
+          <label>
+            <span>开启语音播报</span>
+            <input id="voiceOutputEnabledInput" type="checkbox" />
+          </label>
+          <label>
+            <span>回复后自动朗读</span>
+            <input id="autoSpeakReplyInput" type="checkbox" />
+          </label>
+          <label>
+            <span>识别后自动发送</span>
+            <input id="autoSendVoiceInputInput" type="checkbox" />
+          </label>
         </div>
+
+        <section class="avatar-config-panel">
+          <div class="avatar-config-copy">
+            <span class="page-kicker">数字人形象</span>
+            <h3>给温伴换一张更像她的形象</h3>
+            <p>这里只改她的样子，不改她怎么理解你。</p>
+          </div>
+          <div class="avatar-config-grid">
+            <label class="wide">
+              <span>形象描述</span>
+              <textarea id="avatarPromptInput"></textarea>
+            </label>
+            <label class="wide">
+              <span>画面风格</span>
+              <input id="avatarStyleInput" type="text" />
+            </label>
+            <label class="wide">
+              <span>场景提示</span>
+              <input id="avatarSceneInput" type="text" />
+            </label>
+          </div>
+          <div class="avatar-preview-card">
+            <img class="companion-avatar-image settings-avatar-image" data-companion-avatar hidden />
+            <div class="avatar-preview-copy">
+              <strong data-companion-name></strong>
+              <p id="avatarPreviewPrompt">还没有单独生成形象。</p>
+              <span id="avatarGenerateStatus">还没有生成过形象</span>
+            </div>
+          </div>
+          <div class="panel-actions">
+            <button type="button" onclick="generateCompanionAvatar()">生成并保存形象</button>
+          </div>
+        </section>
 
         <div class="panel-actions top-gap">
           <button onclick="saveSettingsForm()">更新这本书的气质</button>

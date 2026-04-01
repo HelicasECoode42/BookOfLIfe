@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 
 # 温伴项目本地运行与 AI 测试说明
 
@@ -74,11 +75,73 @@ cd 你的项目文件夹
 ## 4. 安装依赖
 
 第一次运行时，需要先安装依赖：
+=======
+# 温伴 Demo
+
+温伴是一个围绕“陪伴式对话 + 记忆整理 + 人生书页”设计的原型系统。
+
+当前这个仓库已经不是只有前端页面的静态 demo，而是包含一套可运行的本地前后端：
+
+- 前端页面：聊天、候选草稿、记忆图谱、设置
+- 后端服务：AI 代理、结构化接口、状态持久化、回复 trace 落盘
+- 本地状态：会把聊天、候选线索、活跃事件、修订日志、事实层等写到服务端 `data/` 目录
+
+## 原型边界
+
+当前版本明确是：
+
+- 单用户本地原型
+- 适合组内测试与答辩演示
+- 文件型持久化，不是正式数据库系统
+
+当前版本还不是：
+
+- 多用户产品
+- 商业级部署方案
+- 完整账号与权限系统
+- 正式隐私合规方案
+
+## 当前能力
+
+- 对话时先走 `reply-plan`，再生成正式回复
+- 支持时间修订，如“不是今天，是昨天”
+- 支持人物修订，如“不是朋友A，是朋友B”
+- 支持短句跟随，如围绕同一事件接“活动内容”“感受”
+- 支持人物别名归并，如“别名A就是朋友A”
+- 支持候选线索整理、草稿确认、人生线摘要
+- 支持服务端状态恢复与 reply trace 持久化
+
+## 项目结构
+
+- [index.html](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/index.html)
+  封面页 / Demo 首页
+- [chat.html](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/chat.html)
+  温伴聊天页
+- [memory.html](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/memory.html)
+  候选草稿与记忆页
+- [memory-map.html](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/memory-map.html)
+  人物 / 时间 / 线索图谱
+- [script.js](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/script.js)
+  前端主逻辑
+- [server.js](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/server.js)
+  本地后端服务
+- [docs/](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/docs)
+  分阶段设计说明
+- [scripts/stage2_smoke_check.mjs](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/scripts/stage2_smoke_check.mjs)
+  前端逻辑 smoke
+- [scripts/stage9_backend_smoke.mjs](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/scripts/stage9_backend_smoke.mjs)
+  后端持久化 smoke
+
+## 运行方式
+
+### 1. 安装依赖
+>>>>>>> e751138 ( 照片墙修改)
 
 ```bash
 npm install
 ```
 
+<<<<<<< HEAD
 如果依赖已经装过，一般不需要重复安装。
 
 ---
@@ -98,11 +161,17 @@ npm install
 ```
 
 内容写成下面这样：
+=======
+### 2. 配置环境变量
+
+在项目根目录新建 `.env`：
+>>>>>>> e751138 ( 照片墙修改)
 
 ```env
 DEEPSEEK_API_KEY=你的key
 ```
 
+<<<<<<< HEAD
 注意：
 
 - 不要加多余空格
@@ -114,11 +183,15 @@ DEEPSEEK_API_KEY=你的key
 ## 6. 启动后端服务
 
 在项目根目录运行：
+=======
+### 3. 启动后端
+>>>>>>> e751138 ( 照片墙修改)
 
 ```bash
 npm start
 ```
 
+<<<<<<< HEAD
 这个命令等价于：
 
 ```bash
@@ -126,11 +199,15 @@ node server.js
 ```
 
 正常情况下会启动本地服务，端口是：
+=======
+后端默认运行在：
+>>>>>>> e751138 ( 照片墙修改)
 
 ```text
 http://localhost:3001
 ```
 
+<<<<<<< HEAD
 ### 6.1 如果出现这个报错
 
 ```text
@@ -190,11 +267,19 @@ http://localhost:3001
 ### 也可以直接打开的页面
 
 项目里目前常用页面有：
+=======
+### 4. 打开前端
+
+推荐用 VS Code 的 Live Server 打开 [index.html](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/index.html)。
+
+也可以直接打开以下页面：
+>>>>>>> e751138 ( 照片墙修改)
 
 - `index.html`
 - `chat.html`
 - `memory.html`
 - `memory-map.html`
+<<<<<<< HEAD
 - `setting.html`
 
 通常测试 AI 对话时，先开：
@@ -211,21 +296,37 @@ http://localhost:3001
 ### 8.1 检查后端是否正常
 
 浏览器打开：
+=======
+
+## 快速检查
+
+### 健康检查
+
+打开：
+>>>>>>> e751138 ( 照片墙修改)
 
 ```text
 http://localhost:3001/api/health
 ```
 
+<<<<<<< HEAD
 如果能看到类似下面的 JSON：
+=======
+如果返回：
+>>>>>>> e751138 ( 照片墙修改)
 
 ```json
 {
   "ok": true,
+<<<<<<< HEAD
   "model": "...",
+=======
+>>>>>>> e751138 ( 照片墙修改)
   "hasApiKey": true
 }
 ```
 
+<<<<<<< HEAD
 说明后端是通的。
 
 ### 8.2 如果 `hasApiKey` 是 `false`
@@ -254,11 +355,19 @@ http://localhost:3001/api/health
 ## 9. 本地自动检查怎么跑
 
 项目里现在有一个 smoke test：
+=======
+说明后端已启动且 key 正常。
+
+### 自动检查
+
+前端逻辑 smoke：
+>>>>>>> e751138 ( 照片墙修改)
 
 ```bash
 npm run stage2:smoke
 ```
 
+<<<<<<< HEAD
 它会跑一些基础检查，比如：
 
 - 时间修订
@@ -511,3 +620,190 @@ git push origin 你的分支名
 ```
 
 然后去 GitHub 发 PR。
+=======
+后端持久化 smoke：
+
+```bash
+npm run stage9:backend-smoke
+```
+
+## Demo 演示路径
+
+建议正式演示时按下面顺序走。
+
+### 路径 1：从聊天到候选草稿
+
+1. 打开封面页
+2. 进入聊天页
+3. 连续输入一段有时间、人物、事件的对话
+4. 展示 AI 回复如何承认修订
+5. 展示右侧或下方候选线索如何出现
+6. 点击“收进这一页”生成草稿
+
+适合展示：
+
+- 对话控制
+- 时间修订
+- 人物修订
+- 候选线索生成
+
+### 路径 2：从候选线索到记忆页
+
+1. 进入 [memory.html](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/memory.html)
+2. 查看待整理线索
+3. 点击“整理成草稿”
+4. 查看人物、时间、事件抽取结果
+5. 确认保留
+
+适合展示：
+
+- 对话片段如何进入记忆页
+- 草稿确认机制
+- AI 整理不是直接入库，而是先给用户确认
+
+### 路径 3：从记忆页到图谱页
+
+1. 进入 [memory-map.html](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/memory-map.html)
+2. 切换人物 / 时间 / 人生线索
+3. 展示同一条人物线如何逐渐成形
+4. 展示时间片段和草稿如何被汇总
+
+适合展示：
+
+- 不是简单聊天记录堆积
+- 系统正在把片段收成结构
+
+## 推荐测试主题
+
+组内测试时建议围绕以下几类问题：
+
+- 时间修订：如“不是今天，是昨天”
+- 人物修订：如“不是朋友A，是朋友B”
+- 代词补槽：如“她就是那个过生日的朋友”
+- 别名归并：如“别名A就是朋友A”
+- 短句跟随：如“活动内容”“感受”“后来呢”
+- 元对话分流：如“我点了忆光但没保存”
+- 候选卡聚合：看同一事件会不会被拆成多张
+
+## 后端当前状态
+
+当前版本已经完成最小可用后端持久化：
+
+- 服务端状态文件：`data/app_state.json`
+- 回复 trace 文件：`data/reply_traces.json`
+
+服务端可恢复的关键对象包括：
+
+- 聊天记录
+- 记忆候选
+- 活跃事件
+- 修订日志
+- 事实层
+- 人物别名
+- 草稿状态
+
+这意味着：
+
+- 页面刷新后不再只靠浏览器本地缓存
+- Demo 过程中的关键状态会保留
+- 可以为后续正式数据库版本继续演进
+
+## 数据与隐私说明
+
+当前原型会在本地保存：
+
+- 聊天记录
+- 记忆候选与草稿
+- 活跃事件与修订日志
+- 事实层与 reply trace
+- 上传照片
+- 温伴形象图
+
+这些内容都可能包含个人生活信息，因此当前仓库已经默认忽略：
+
+- `.env`
+- `data/`
+- `uploads/`
+- `.DS_Store`
+
+最小安全边界：
+
+- 服务端关闭 `x-powered-by`
+- 原型版 CORS 只允许本地 / 指定来源
+- 图片上传有限制
+
+当前仍未完成：
+
+- 多用户隔离
+- 登录与鉴权
+- 加密存储
+- 用户删除与导出流程
+
+详细说明见：
+
+- [docs/stage14_minimum_security_and_user_plan.md](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/docs/stage14_minimum_security_and_user_plan.md)
+
+## 已完成阶段
+
+- Stage 2：回答控制器
+- Stage 3：时间对象 MVP
+- Stage 4：事件层 MVP
+- Stage 5：修订机制与元对话分流
+- Stage 6：长期事实层 MVP
+- Stage 7：回答控制层与安全检查
+- Stage 8：检索重排与时间优先召回
+- Stage 9：后端持久化与状态恢复 MVP
+
+## 当前仍未完成
+
+当前后端仍是文件型持久化，不是正式数据库系统。
+
+还没有做：
+
+- 多用户隔离
+- 真正数据库建模
+- 后端主导的事件图谱计算
+- trace 查询页
+- 冲突回放 UI
+- 运维级部署方案
+
+## 常见问题
+
+### 1. `npm start` 报端口占用
+
+先查 3001：
+
+```bash
+lsof -i :3001
+```
+
+再结束旧进程：
+
+```bash
+kill -9 进程号
+```
+
+### 2. 页面能打开但 AI 不回复
+
+优先检查：
+
+- 后端是否在跑
+- `.env` 是否配置了 `DEEPSEEK_API_KEY`
+- `/api/health` 是否返回 `hasApiKey: true`
+
+### 3. 页面刷新后内容不一致
+
+当前版本会优先从后端恢复状态。
+
+如果你之前在旧版本里跑过很多本地缓存，可以先清空浏览器本地缓存，再重新打开页面，让它按新的服务端状态同步。
+
+## 参考文档
+
+- [docs/stage2_execution_design.md](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/docs/stage2_execution_design.md)
+- [docs/stage3_time_mvp.md](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/docs/stage3_time_mvp.md)
+- [docs/stage4_event_mvp.md](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/docs/stage4_event_mvp.md)
+- [docs/stage5_revision_meta_mvp.md](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/docs/stage5_revision_meta_mvp.md)
+- [docs/stage6_fact_mvp.md](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/docs/stage6_fact_mvp.md)
+- [docs/stage7_9_fact_confirmation_consistency.md](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/docs/stage7_9_fact_confirmation_consistency.md)
+- [docs/stage9_backend_persistence.md](/Users/wangyufan/Desktop/HelicasE/大学生创新创业/结题v1%20copy%202/docs/stage9_backend_persistence.md)
+>>>>>>> e751138 ( 照片墙修改)

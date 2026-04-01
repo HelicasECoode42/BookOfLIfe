@@ -5,7 +5,12 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "stage2:smoke": "node scripts/stage2_smoke_check.mjs"
+    "stage2:smoke": "node scripts/stage2_smoke_check.mjs",
+    "stage9:backend-smoke": "node scripts/stage9_backend_smoke.mjs",
+    "stage11:photo-smoke": "node scripts/stage11_photo_wall_smoke.mjs",
+    "stage12:avatar-smoke": "node scripts/stage12_avatar_smoke.mjs",
+    "stage13:integration-smoke": "node scripts/stage13_integration_smoke.mjs",
+    "stage14:privacy-smoke": "node scripts/stage14_privacy_smoke.mjs"
   },
   "dependencies": {
     "axios": "^1.11.0",

@@ -12,7 +12,33 @@ const STORAGE_KEYS = {
   revisionLogs: 'life_book_revision_logs_v1',
   localFacts: 'life_book_local_facts_v1',
   factDatabase: 'life_book_fact_database_v1',
-  personAliases: 'life_book_person_aliases_v1'
+  personAliases: 'life_book_person_aliases_v1',
+  memoryDraft: 'life_book_memory_draft_v3',
+  photos: 'life_book_photos_v1',
+  companionAvatar: 'life_book_companion_avatar_v1',
+  enhancementTasks: 'life_book_enhancement_tasks_v1',
+  userCard: 'life_book_user_card_v1'
+};
+
+const SERVER_STATE_KEY_MAP = {
+  [STORAGE_KEYS.memories]: 'memories',
+  [STORAGE_KEYS.chat]: 'chat',
+  [STORAGE_KEYS.profile]: 'profile',
+  [STORAGE_KEYS.settings]: 'settings',
+  [STORAGE_KEYS.lastChatRecap]: 'lastChatRecap',
+  [STORAGE_KEYS.memoryCues]: 'memoryCues',
+  [STORAGE_KEYS.strategyTrail]: 'strategyTrail',
+  [STORAGE_KEYS.memoryCandidates]: 'memoryCandidates',
+  [STORAGE_KEYS.lifeSummaries]: 'lifeSummaries',
+  [STORAGE_KEYS.activeEventContext]: 'activeEventContext',
+  [STORAGE_KEYS.revisionLogs]: 'revisionLogs',
+  [STORAGE_KEYS.localFacts]: 'localFacts',
+  [STORAGE_KEYS.factDatabase]: 'factDatabase',
+  [STORAGE_KEYS.personAliases]: 'personAliases',
+  [STORAGE_KEYS.memoryDraft]: 'memoryDraft',
+  [STORAGE_KEYS.photos]: 'photos',
+  [STORAGE_KEYS.companionAvatar]: 'companionAvatar',
+  [STORAGE_KEYS.userCard]: 'userCard'
 };
 
 const DEFAULT_PROFILE = {
@@ -41,7 +67,11 @@ const DEFAULT_PROFILE = {
 const DEFAULT_SETTINGS = {
   fontSize: '17px',
   companionName: '温伴',
-  accent: '#c76645'
+  accent: '#c76645',
+  voiceInputMode: 'browser',
+  voiceOutputEnabled: true,
+  autoSpeakReply: true,
+  autoSendVoiceInput: false
 };
 
 // Live2D visual tuning for the book-stage layout.
@@ -80,6 +110,15 @@ let pendingMemoryDraft = null;
 let memoryCandidatesExpanded = false;
 let lifeSummaryComposeTimer = null;
 let lifeSummaryComposeInFlight = false;
+let suppressServerSync = false;
+const persistTimers = new Map();
+let speechSynthesisUtterance = null;
+let speechOutputEnabled = true;
+let voiceInputAvailable = false;
+let voiceCapabilities = {
+  asr: { provider: 'browser', browserFallback: true, remoteConfigured: false },
+  tts: { provider: 'browser', browserFallback: true, remoteConfigured: false }
+};
 
 function autosizeTextarea(textarea) {
   if (!textarea) return;
@@ -119,6 +158,11 @@ function nowString() {
   return new Date().toLocaleString('zh-CN', { hour12: false });
 }
 
+function getSpeechSynthesisEngine() {
+  if (typeof window === 'undefined') return null;
+  return window.speechSynthesis || null;
+}
+
 function uid(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 }
@@ -132,8 +176,35 @@ function readStorage(key, fallback) {
   }
 }
 
+function scheduleServerStatePersist(key, value) {
+  const serverKey = SERVER_STATE_KEY_MAP[key];
+  if (!serverKey || suppressServerSync) return;
+  if (persistTimers.has(serverKey)) {
+    clearTimeout(persistTimers.get(serverKey));
+  }
+  const timer = window.setTimeout(async () => {
+    persistTimers.delete(serverKey);
+    try {
+      await fetch(`http://localhost:3001/api/state/${serverKey}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value })
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  }, 80);
+  persistTimers.set(serverKey, timer);
+}
+
 function writeStorage(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
+  scheduleServerStatePersist(key, value);
+}
+
+function clearStorage(key) {
+  localStorage.removeItem(key);
+  scheduleServerStatePersist(key, null);
 }
 
 function uniqueStrings(list = [], limit = 8) {
@@ -360,8 +431,213 @@ function normalizeAliasRecord(record = {}) {
   };
 }
 
+function normalizePhotoItem(photo = {}) {
+  const personName = normalizePersonLabel(photo.personName || '');
+  const personId = String(photo.personId || buildCanonicalPersonId(personName)).trim();
+  return {
+    id: String(photo.id || uid('photo')).trim(),
+    fileName: String(photo.fileName || '').trim(),
+    mimeType: String(photo.mimeType || '').trim(),
+    url: String(photo.url || '').trim(),
+    createdAt: String(photo.createdAt || nowString()).trim(),
+    personId,
+    personName,
+    memoryId: String(photo.memoryId || '').trim(),
+    memoryTitle: String(photo.memoryTitle || '').trim(),
+    caption: String(photo.caption || '').trim(),
+    source: String(photo.source || 'upload').trim(),
+    status: ['active', 'archived'].includes(String(photo.status || '').trim()) ? String(photo.status || '').trim() : 'active'
+  };
+}
+
+function normalizeCompanionAvatar(avatar = {}) {
+  return {
+    id: String(avatar.id || '').trim(),
+    provider: String(avatar.provider || 'local-svg').trim(),
+    url: String(avatar.url || '').trim(),
+    fileName: String(avatar.fileName || '').trim(),
+    createdAt: String(avatar.createdAt || '').trim(),
+    prompt: String(avatar.prompt || '').trim(),
+    style: String(avatar.style || '').trim(),
+    scene: String(avatar.scene || '').trim(),
+    accent: String(avatar.accent || '').trim(),
+    companionName: String(avatar.companionName || '').trim(),
+    status: ['active', 'archived'].includes(String(avatar.status || '').trim()) ? String(avatar.status || '').trim() : 'active'
+  };
+}
+
+function normalizeEnhancementTask(task = {}) {
+  return {
+    id: String(task.id || uid('enhancement')).trim(),
+    kind: String(task.kind || 'background').trim(),
+    label: String(task.label || '').trim(),
+    detail: String(task.detail || '').trim(),
+    status: ['pending', 'success', 'error'].includes(String(task.status || '').trim()) ? String(task.status || '').trim() : 'pending',
+    createdAt: String(task.createdAt || nowString()).trim(),
+    updatedAt: String(task.updatedAt || task.createdAt || nowString()).trim()
+  };
+}
+
+function normalizeUserCard(card = {}) {
+  return {
+    displayName: String(card.displayName || '').trim(),
+    photoUrl: String(card.photoUrl || '').trim(),
+    photoId: String(card.photoId || '').trim(),
+    updatedAt: String(card.updatedAt || nowString()).trim()
+  };
+}
+
 function getPersonAliasRecords() {
   return readStorage(STORAGE_KEYS.personAliases, []).map(normalizeAliasRecord).filter((item) => item.displayName);
+}
+
+function getPhotoPeopleOptions() {
+  const options = new Map();
+  getMemoryMapGroups().people.forEach((group) => {
+    const id = String(group.id || '').trim();
+    const label = String(group.label || '').trim();
+    if (id && label && !options.has(id)) {
+      options.set(id, { id, label });
+    }
+  });
+  getPersonAliasRecords().forEach((item) => {
+    if (item.canonicalId && item.displayName && !options.has(item.canonicalId)) {
+      options.set(item.canonicalId, { id: item.canonicalId, label: item.displayName });
+    }
+  });
+  getPhotoItems().forEach((item) => {
+    if (item.personId && item.personName && !options.has(item.personId)) {
+      options.set(item.personId, { id: item.personId, label: item.personName });
+    }
+  });
+  return Array.from(options.values()).sort((a, b) => a.label.localeCompare(b.label, 'zh-Hans-CN'));
+}
+
+function getLatestPhotoForPerson(personId = '', personName = '') {
+  const targetId = String(personId || buildCanonicalPersonId(personName)).trim();
+  return getPhotoItems().find((item) => item.status === 'active' && item.source !== 'user_profile' && item.personId && item.personId === targetId) || null;
+}
+
+function getPhotoMemoryOptions() {
+  return getMemories()
+    .slice(0, 24)
+    .map((memory) => ({
+      id: memory.id,
+      label: `${readableMemoryTitle(memory)} · ${memory.timelineLabel || memory.createdAt}`
+    }));
+}
+
+function renderMemoryPhotoInputWall() {
+  const root = document.getElementById('memoryPhotoInputWall');
+  if (!root) return;
+  const items = getPhotoItems()
+    .filter((item) => item.status === 'active' && item.source !== 'user_profile')
+    .slice(0, 6);
+  root.innerHTML = items.length ? items.map((item) => `
+    <article class="memory-photo-card has-image">
+      <img class="memory-photo-thumb" src="${escapeHtml(getPhotoUrl(item))}" alt="${escapeHtml(item.caption || item.fileName)}">
+      <strong>${escapeHtml(item.caption || '一张刚收进来的照片')}</strong>
+      <span>${escapeHtml(item.memoryTitle || item.personName || '还没挂到人物或记忆')}</span>
+    </article>
+  `).join('') : '<div class="memory-empty">先放进一张照片，这里就会开始长出照片墙。</div>';
+}
+
+function describePhotoRecall(item = {}) {
+  return item.caption || item.memoryTitle || item.personName || '这张照片还没有写备注';
+}
+
+function normalizeChatItem(item = {}) {
+  return {
+    role: item.role === 'assistant' ? 'assistant' : 'user',
+    content: String(item.content || '').trim(),
+    createdAt: String(item.createdAt || nowString()).trim(),
+    kind: String(item.kind || 'text').trim(),
+    photos: Array.isArray(item.photos) ? item.photos.map(normalizePhotoItem) : []
+  };
+}
+
+function getChatPhotoRecallCandidates(queryText = '') {
+  const text = String(queryText || '').trim();
+  if (text.length < 2) return [];
+  const features = buildQueryFeatures(text);
+  const people = (features.explicitPeople || []).map(resolveCanonicalPersonName).filter(Boolean);
+  const timeRefs = features.timeRefs || [];
+  const shouldRecall = people.length || timeRefs.length || features.tokens.length >= 2 || /照片|相片|那张|这个人|那个人|她|他/.test(text);
+  if (!shouldRecall) return [];
+
+  return getPhotoItems()
+    .filter((item) => item.status === 'active' && item.source !== 'user_profile')
+    .map((item) => {
+      const haystack = [
+        item.personName,
+        item.caption,
+        item.memoryTitle,
+        item.fileName,
+        item.createdAt.replace('T', ' ')
+      ].filter(Boolean).join(' ');
+      let score = scoreTextAgainstFeatures(haystack, features, 1);
+      if (item.personName && people.includes(resolveCanonicalPersonName(item.personName))) score += 18;
+      if (timeRefs.some((ref) => haystack.includes(ref))) score += 10;
+      if (item.caption && text.includes(item.caption)) score += 20;
+      if (item.memoryTitle && text.includes(item.memoryTitle)) score += 12;
+      if (item.personName && text.includes(item.personName)) score += 16;
+      return { item, score };
+    })
+    .filter((entry) => entry.score >= 10)
+    .sort((a, b) => b.score - a.score || String(b.item.createdAt || '').localeCompare(String(a.item.createdAt || '')))
+    .slice(0, 3)
+    .map((entry) => entry.item);
+}
+
+function shouldInjectPhotoRecallTurn(text = '', replyPlan = {}, retrieval = {}) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  if (replyPlan.isMetaConversation || isMetaConversation(value) || isGreetingLike(value)) return false;
+  if (replyPlan.correctionType && replyPlan.correctionType !== 'none') return false;
+  if ((retrieval.queryFeatures?.timeRefs || []).length === 0 && (retrieval.queryFeatures?.explicitPeople || []).length === 0 && value.length < 8) return false;
+  return true;
+}
+
+function buildPhotoRecallTurn(queryText = '', replyPlan = {}, retrieval = {}) {
+  if (!shouldInjectPhotoRecallTurn(queryText, replyPlan, retrieval)) return null;
+  const photos = getChatPhotoRecallCandidates(queryText);
+  if (!photos.length) return null;
+  return normalizeChatItem({
+    role: 'assistant',
+    kind: 'photo_recall',
+    content: photos.length === 1
+      ? '我先把像是同一件事的照片翻出来。你直接接着说是不是这张，或者告诉我哪里不对就行。'
+      : '我先把几张像是有关的照片翻出来。你直接接着说是哪一张，或者告诉我都不是就行。',
+    photos,
+    createdAt: nowString()
+  });
+}
+
+function setPhotoUploadStatus(text = '') {
+  const status = document.getElementById('photoUploadStatus');
+  if (!status) return;
+  status.textContent = text || '照片墙待命';
+}
+
+function getCurrentUrlParams() {
+  if (typeof window === 'undefined') return new URLSearchParams();
+  return new URLSearchParams(window.location.search || '');
+}
+
+function getPageName() {
+  if (typeof window === 'undefined') return '';
+  return String(window.location.pathname || '').split('/').pop();
+}
+
+function getPhotoUrl(photo = {}) {
+  const url = String(photo.url || '').trim();
+  if (!url) return '';
+  return /^https?:\/\//.test(url) ? url : `http://localhost:3001${url}`;
+}
+
+function getAvatarUrl(avatar = getCompanionAvatar()) {
+  if (!avatar?.url) return '';
+  return getPhotoUrl(avatar);
 }
 
 function setPersonAliasRecords(items) {
@@ -1077,7 +1353,7 @@ function getActiveEventContext() {
 
 function setActiveEventContext(event) {
   if (!event) {
-    localStorage.removeItem(STORAGE_KEYS.activeEventContext);
+    clearStorage(STORAGE_KEYS.activeEventContext);
     rebuildFactDatabase();
     return;
   }
@@ -2089,7 +2365,12 @@ async function requestMemoryFilter(text, retrieval, replyPlan) {
 
 function schedulePostReplyProcessing(task) {
   window.setTimeout(() => {
-    task().catch((error) => console.error(error));
+    runEnhancementTask({
+      label: '回复后整理',
+      detail: '正在把这轮对话收进候选线索',
+      successDetail: '候选线索和整理摘要已更新',
+      errorDetail: '后台整理失败，但主回复不受影响'
+    }, task).catch((error) => console.error(error));
   }, 0);
 }
 
@@ -2211,8 +2492,109 @@ function ensureSeedData() {
   if (!readStorage(STORAGE_KEYS.personAliases, null)) {
     writeStorage(STORAGE_KEYS.personAliases, []);
   }
+  if (!readStorage(STORAGE_KEYS.photos, null)) {
+    writeStorage(STORAGE_KEYS.photos, []);
+  }
+  if (!readStorage(STORAGE_KEYS.companionAvatar, null)) {
+    writeStorage(STORAGE_KEYS.companionAvatar, null);
+  }
+  if (!readStorage(STORAGE_KEYS.userCard, null)) {
+    writeStorage(STORAGE_KEYS.userCard, null);
+  }
   refreshLifeSummaries();
   rebuildLocalFacts();
+}
+
+function buildServerBootstrapState() {
+  return {
+    memories: readStorage(STORAGE_KEYS.memories, []),
+    chat: readStorage(STORAGE_KEYS.chat, []),
+    profile: readStorage(STORAGE_KEYS.profile, DEFAULT_PROFILE),
+    settings: readStorage(STORAGE_KEYS.settings, DEFAULT_SETTINGS),
+    lastChatRecap: readStorage(STORAGE_KEYS.lastChatRecap, null),
+    memoryCues: readStorage(STORAGE_KEYS.memoryCues, []),
+    strategyTrail: readStorage(STORAGE_KEYS.strategyTrail, []),
+    memoryCandidates: readStorage(STORAGE_KEYS.memoryCandidates, []),
+    lifeSummaries: readStorage(STORAGE_KEYS.lifeSummaries, []),
+    activeEventContext: readStorage(STORAGE_KEYS.activeEventContext, null),
+    revisionLogs: readStorage(STORAGE_KEYS.revisionLogs, []),
+    localFacts: readStorage(STORAGE_KEYS.localFacts, []),
+    factDatabase: readStorage(STORAGE_KEYS.factDatabase, []),
+    personAliases: readStorage(STORAGE_KEYS.personAliases, []),
+    memoryDraft: readStorage(STORAGE_KEYS.memoryDraft, null),
+    photos: readStorage(STORAGE_KEYS.photos, []),
+    companionAvatar: readStorage(STORAGE_KEYS.companionAvatar, null),
+    userCard: readStorage(STORAGE_KEYS.userCard, null)
+  };
+}
+
+async function hydrateStateFromServer() {
+  suppressServerSync = true;
+  try {
+    const response = await fetch('http://localhost:3001/api/state');
+    if (!response.ok) throw new Error('state fetch failed');
+    const data = await response.json();
+    const state = data?.state || {};
+    Object.entries(SERVER_STATE_KEY_MAP).forEach(([storageKey, serverKey]) => {
+      if (!Object.prototype.hasOwnProperty.call(state, serverKey)) return;
+      const value = state[serverKey];
+      if (value === null || typeof value === 'undefined') {
+        localStorage.removeItem(storageKey);
+      } else {
+        localStorage.setItem(storageKey, JSON.stringify(value));
+      }
+    });
+  } catch (error) {
+    console.error(error);
+  } finally {
+    suppressServerSync = false;
+  }
+}
+
+async function bootstrapServerStateFromLocal() {
+  try {
+    await fetch('http://localhost:3001/api/state/bootstrap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state: buildServerBootstrapState() })
+    });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function appendReplyTrace(trace = {}) {
+  try {
+    await fetch('http://localhost:3001/api/traces', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(trace)
+    });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function fetchVoiceCapabilities() {
+  try {
+    const response = await fetch('http://localhost:3001/api/voice/capabilities');
+    if (!response.ok) throw new Error('voice capabilities unavailable');
+    const data = await response.json();
+    voiceCapabilities = {
+      asr: {
+        provider: String(data?.asr?.provider || 'browser'),
+        browserFallback: Boolean(data?.asr?.browserFallback),
+        remoteConfigured: Boolean(data?.asr?.remoteConfigured)
+      },
+      tts: {
+        provider: String(data?.tts?.provider || 'browser'),
+        browserFallback: Boolean(data?.tts?.browserFallback),
+        remoteConfigured: Boolean(data?.tts?.remoteConfigured)
+      }
+    };
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 function getProfile() {
@@ -2238,7 +2620,7 @@ function setMemories(memories) {
 }
 
 function getChatHistory() {
-  return readStorage(STORAGE_KEYS.chat, []);
+  return readStorage(STORAGE_KEYS.chat, []).map(normalizeChatItem);
 }
 
 function getUserChatHistory(limit = 8) {
@@ -2248,7 +2630,7 @@ function getUserChatHistory(limit = 8) {
 }
 
 function setChatHistory(history) {
-  writeStorage(STORAGE_KEYS.chat, history);
+  writeStorage(STORAGE_KEYS.chat, history.map(normalizeChatItem));
 }
 
 function setProfile(profile) {
@@ -2258,6 +2640,83 @@ function setProfile(profile) {
 
 function setSettings(settings) {
   writeStorage(STORAGE_KEYS.settings, settings);
+}
+
+function getPhotoItems() {
+  return readStorage(STORAGE_KEYS.photos, []).map(normalizePhotoItem);
+}
+
+function setPhotoItems(items) {
+  writeStorage(STORAGE_KEYS.photos, items.map(normalizePhotoItem));
+}
+
+function getCompanionAvatar() {
+  const value = readStorage(STORAGE_KEYS.companionAvatar, null);
+  return value ? normalizeCompanionAvatar(value) : null;
+}
+
+function setCompanionAvatar(avatar) {
+  if (!avatar) {
+    writeStorage(STORAGE_KEYS.companionAvatar, null);
+    return;
+  }
+  writeStorage(STORAGE_KEYS.companionAvatar, normalizeCompanionAvatar(avatar));
+}
+
+function getUserCard() {
+  const value = readStorage(STORAGE_KEYS.userCard, null);
+  return value ? normalizeUserCard(value) : null;
+}
+
+function setUserCard(card) {
+  if (!card) {
+    writeStorage(STORAGE_KEYS.userCard, null);
+    return;
+  }
+  writeStorage(STORAGE_KEYS.userCard, normalizeUserCard(card));
+}
+
+function getEnhancementTasks() {
+  return readStorage(STORAGE_KEYS.enhancementTasks, []).map(normalizeEnhancementTask);
+}
+
+function setEnhancementTasks(items) {
+  writeStorage(STORAGE_KEYS.enhancementTasks, items.map(normalizeEnhancementTask).slice(0, 8));
+}
+
+function upsertEnhancementTask(task = {}) {
+  const normalized = normalizeEnhancementTask(task);
+  const next = [normalized, ...getEnhancementTasks().filter((item) => item.id !== normalized.id)].slice(0, 8);
+  setEnhancementTasks(next);
+  renderEnhancementHub();
+  return normalized;
+}
+
+async function runEnhancementTask(task, work) {
+  const base = upsertEnhancementTask({
+    ...task,
+    status: 'pending',
+    createdAt: nowString(),
+    updatedAt: nowString()
+  });
+  try {
+    const result = await work();
+    upsertEnhancementTask({
+      ...base,
+      detail: task.successDetail || base.detail,
+      status: 'success',
+      updatedAt: nowString()
+    });
+    return result;
+  } catch (error) {
+    upsertEnhancementTask({
+      ...base,
+      detail: task.errorDetail || error.message || base.detail,
+      status: 'error',
+      updatedAt: nowString()
+    });
+    throw error;
+  }
 }
 
 function getLastChatRecap() {
@@ -3975,6 +4434,7 @@ function getPersonAlbumCards() {
     .filter((item) => repeatedIds.has(item.personId))
     .map((item) => ({
       ...item,
+      photo: getLatestPhotoForPerson(item.personId, item.person),
       subtitle: item.label,
       caption: item.summary || `${item.person}这一条回忆线正在慢慢长出来。`
     }));
@@ -4037,6 +4497,9 @@ function renderMemoryMap() {
   const groups = getMemoryMapGroups();
   const overviewRoot = document.getElementById('bookOverviewCards');
   const photoWall = document.getElementById('memoryPhotoWall');
+  const uploadedPhotoWall = document.getElementById('uploadedPhotoWall');
+  const photoPersonSelect = document.getElementById('photoPersonSelect');
+  const photoMemorySelect = document.getElementById('photoMemorySelect');
   const bookShelf = document.getElementById('bookChapterShelf');
   const timeGrid = document.getElementById('memoryTimeGrid');
   const timelineStrip = document.getElementById('memoryTimelineStrip');
@@ -4130,13 +4593,58 @@ function renderMemoryMap() {
   if (photoWall) {
     const items = getPersonAlbumCards().filter((item) => !query || `${item.person} ${item.title} ${item.caption} ${item.subtitle}`.toLowerCase().includes(query));
     photoWall.innerHTML = items.length ? items.map((item) => `
-      <article class="memory-photo-card" onclick="selectPerson('${item.personId.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')">
-        <div class="memory-photo-avatar">${escapeHtml(item.person.slice(0, 1))}</div>
+      <article class="memory-photo-card${item.photo ? ' has-image' : ''}" onclick="selectPerson('${item.personId.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')">
+        ${item.photo ? `<img class="memory-photo-thumb" src="${escapeHtml(getPhotoUrl(item.photo))}" alt="${escapeHtml(item.person)}">` : `<div class="memory-photo-avatar">${escapeHtml(item.person.slice(0, 1))}</div>`}
         <strong>${escapeHtml(item.person)}</strong>
         <span>${escapeHtml(item.subtitle)}</span>
         <p>${escapeHtml(compactText(item.caption, 40))}</p>
       </article>
     `).join('') : '<div class="memory-empty">同一个人至少在两段记忆里出现后，照片墙才会开始整理出来。</div>';
+  }
+
+  if (photoPersonSelect) {
+    const options = getPhotoPeopleOptions();
+    const currentValue = photoPersonSelect.value;
+    photoPersonSelect.innerHTML = ['<option value="">先不挂人物</option>', ...options.map((item) => `
+      <option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>
+    `)].join('');
+    if (options.some((item) => item.id === currentValue)) {
+      photoPersonSelect.value = currentValue;
+    }
+  }
+
+  if (photoMemorySelect) {
+    const options = getPhotoMemoryOptions();
+    const currentValue = photoMemorySelect.value;
+    photoMemorySelect.innerHTML = ['<option value="">先不挂记忆</option>', ...options.map((item) => `
+      <option value="${escapeHtml(item.id)}">${escapeHtml(compactText(item.label, 34))}</option>
+    `)].join('');
+    if (options.some((item) => item.id === currentValue)) {
+      photoMemorySelect.value = currentValue;
+    }
+  }
+
+  if (uploadedPhotoWall) {
+    const items = getPhotoItems().filter((item) => item.status === 'active' && item.source !== 'user_profile').filter((item) => {
+      if (!query) return true;
+      const haystack = `${item.personName} ${item.caption} ${item.memoryTitle} ${item.fileName}`.toLowerCase();
+      return haystack.includes(query);
+    });
+    uploadedPhotoWall.innerHTML = items.length ? items.map((item) => `
+      <article class="uploaded-photo-card">
+        <img class="memory-photo-thumb" src="${escapeHtml(getPhotoUrl(item))}" alt="${escapeHtml(item.caption || item.personName || item.fileName || '照片')}">
+        <div class="uploaded-photo-meta">
+          <strong>${escapeHtml(item.personName || '未挂人物')}</strong>
+          <span>${escapeHtml(item.caption || '还没有备注，之后可以补一句。')}</span>
+          <span>${escapeHtml(item.memoryTitle ? `关联记忆：${item.memoryTitle}` : item.createdAt.replace('T', ' ').slice(0, 16))}</span>
+        </div>
+        <div class="uploaded-photo-actions">
+          ${item.personId ? `<button class="ghost-btn" onclick="selectPerson('${item.personId.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')">看这个人</button>` : ''}
+          <button class="ghost-btn" onclick="event.stopPropagation(); relinkPhotoPrompt('${item.id}')">改挂接</button>
+          <button class="ghost-btn" onclick="event.stopPropagation(); deletePhotoItem('${item.id}')">删除</button>
+        </div>
+      </article>
+    `).join('') : '<div class="memory-empty">先上传一张照片，它就会在这里慢慢长成回忆入口。</div>';
   }
 
   if (lifeSummaryWall) {
@@ -4302,19 +4810,26 @@ function renderMemoryMap() {
 
 function updateTheme() {
   const settings = getSettings();
+  speechOutputEnabled = settings.voiceOutputEnabled !== false;
   document.documentElement.style.setProperty('--accent', settings.accent);
   document.documentElement.style.fontSize = settings.fontSize;
   document.querySelectorAll('[data-companion-name]').forEach((node) => {
     node.textContent = settings.companionName;
   });
+  const speakBtn = document.getElementById('speakBtn');
+  if (speakBtn) {
+    speakBtn.classList.toggle('muted', !speechOutputEnabled);
+    speakBtn.textContent = speechOutputEnabled ? '说' : '静音';
+  }
 }
 
 function populateSharedCopy() {
   const profile = getProfile();
+  const userCard = getUserCard();
   const memories = getMemories();
   const greeting = document.getElementById('coverGreeting');
   if (greeting) {
-    greeting.textContent = `${profile.name}，今天想从何处开始呢？`;
+    greeting.textContent = `${userCard?.displayName || profile.name}，今天想从何处开始呢？`;
   }
   const quote = document.getElementById('coverQuote');
   if (quote) {
@@ -4328,6 +4843,19 @@ function populateSharedCopy() {
   if (presenceText) {
     presenceText.textContent = `${getSettings().companionName}会先安静听你说，再把值得留下的片段轻轻收进书里。`;
   }
+  document.querySelectorAll('[data-user-name]').forEach((node) => {
+    node.textContent = userCard?.displayName || profile.name;
+  });
+  document.querySelectorAll('[data-user-photo]').forEach((node) => {
+    if (userCard?.photoUrl) {
+      node.hidden = false;
+      node.src = userCard.photoUrl;
+      node.alt = `${userCard.displayName || profile.name}的照片`;
+    } else {
+      node.hidden = true;
+      node.removeAttribute('src');
+    }
+  });
   const memoryHint = document.getElementById('coverMemoryHint');
   if (memoryHint) {
     memoryHint.textContent = readableMemoryTitle(memories[0] || { title: '一小段旧时光' });
@@ -4375,6 +4903,7 @@ function summarizeRecentTopics(memories) {
 
 function renderCoverWidgets() {
   const memories = getMemories();
+  const avatar = getCompanionAvatar();
   const latest = memories[0];
   const summaryTitle = document.getElementById('coverSummaryTitle');
   const summaryText = document.getElementById('coverSummaryText');
@@ -4421,40 +4950,81 @@ function renderCoverWidgets() {
       ? `“${getHomepageMemorySnippet(latest, 18)}”`
       : '像桌边的小小陪伴娃娃一样守着你，等你从今天的一件小事开始。';
   }
+  document.querySelectorAll('[data-companion-avatar]').forEach((node) => {
+    const image = node;
+    const empty = !avatar?.url;
+    image.hidden = empty;
+    if (!empty) {
+      image.src = getAvatarUrl(avatar);
+      image.alt = `${getSettings().companionName}形象`;
+    } else {
+      image.removeAttribute('src');
+    }
+  });
+  const avatarHint = document.getElementById('coverAvatarHint');
+  if (avatarHint) {
+    avatarHint.textContent = avatar?.style || '还没单独生成形象，先保留现在这份陪伴感。';
+  }
 }
 
 function initSpeech() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) return;
+  voiceInputAvailable = Boolean(SpeechRecognition);
+  if (!SpeechRecognition) {
+    setVoiceStatus(voiceCapabilities.asr.remoteConfigured ? '浏览器语音不可用，可接后端识别' : '当前浏览器不支持语音输入');
+    return;
+  }
   recognition = new SpeechRecognition();
   recognition.lang = 'zh-CN';
   recognition.interimResults = false;
   recognition.maxAlternatives = 1;
+  recognition.continuous = false;
+  setVoiceStatus('语音待命');
   recognition.onresult = (event) => {
     const text = event.results[0][0].transcript;
     const input = document.getElementById('userInput');
-    if (input) input.value = text;
+    if (input) {
+      input.value = text;
+      input.dispatchEvent(new Event('input'));
+    }
+    setVoiceStatus(`已识别：${compactText(text, 16)}`);
+    if (getSettings().autoSendVoiceInput) {
+      window.setTimeout(() => talk(), 120);
+    }
   };
   recognition.onend = () => {
     recognizing = false;
     document.getElementById('voiceBtn')?.classList.remove('active');
+    if (!speechSynthesisUtterance) {
+      setVoiceStatus('语音待命');
+      setStageMode('idle');
+    }
+  };
+  recognition.onerror = (event) => {
+    recognizing = false;
+    document.getElementById('voiceBtn')?.classList.remove('active');
+    setVoiceStatus(event?.error === 'not-allowed' ? '语音权限未开启' : '语音识别失败，请改用文字');
+    setStageMode('idle');
   };
 }
 
 function toggleVoice() {
   if (!recognition) {
-    alert('当前浏览器不支持语音识别，建议使用 Chrome。');
+    alert(voiceCapabilities.asr.remoteConfigured ? '当前浏览器语音不可用，后续可切到后端语音识别。' : '当前浏览器不支持语音识别，建议使用 Chrome。');
     return;
   }
   if (recognizing) {
     recognition.stop();
     recognizing = false;
     document.getElementById('voiceBtn')?.classList.remove('active');
+    setVoiceStatus('已停止收听');
     return;
   }
   recognition.start();
   recognizing = true;
   document.getElementById('voiceBtn')?.classList.add('active');
+  setVoiceStatus('正在听你说话');
+  setStageMode('listening');
 }
 
 function renderChatHistory() {
@@ -4476,6 +5046,18 @@ function renderChatHistory() {
       <div class="message-bubble">
         <div class="message-name">${item.role === 'assistant' ? escapeHtml(settings.companionName) : '你'}</div>
         <div class="message-text">${escapeHtml(item.content)}</div>
+        ${item.kind === 'photo_recall' && item.photos.length ? `
+          <div class="message-photo-recall">
+            ${item.photos.map((photo) => `
+              <div class="message-photo-card">
+                <img class="memory-photo-thumb" src="${escapeHtml(getPhotoUrl(photo))}" alt="${escapeHtml(photo.caption || photo.personName || photo.fileName || '照片')}">
+                <strong>${escapeHtml(photo.personName || '这张照片')}</strong>
+                <p>${escapeHtml(compactText(describePhotoRecall(photo), 40))}</p>
+                <span>${escapeHtml(photo.memoryTitle ? `关联：${photo.memoryTitle}` : photo.createdAt.replace('T', ' ').slice(0, 16))}</span>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
       </div>
     </article>
   `).join('');
@@ -4541,6 +5123,12 @@ function setCompanionStatus(text) {
   if (status) status.textContent = text;
 }
 
+function setVoiceStatus(text = '') {
+  const status = document.getElementById('voiceStatus');
+  if (!status) return;
+  status.textContent = text || '语音待命';
+}
+
 function setAmbientQuote(text) {
   const quote = document.getElementById('ambientQuote');
   if (quote) quote.textContent = text;
@@ -4552,9 +5140,234 @@ function setStageMode(mode) {
   stage.dataset.mode = mode;
 }
 
+function renderCompanionAvatar() {
+  const avatar = getCompanionAvatar();
+  const url = getAvatarUrl(avatar);
+  document.querySelectorAll('[data-companion-avatar]').forEach((node) => {
+    node.hidden = !url;
+    if (url) {
+      node.src = url;
+      node.alt = `${getSettings().companionName}形象`;
+    } else {
+      node.removeAttribute('src');
+    }
+  });
+  const coverWidget = document.getElementById('coverDoll');
+  if (coverWidget) {
+    coverWidget.hidden = Boolean(url);
+  }
+  const promptNode = document.getElementById('avatarPreviewPrompt');
+  if (promptNode) {
+    promptNode.textContent = avatar?.prompt || '还没有单独生成形象。';
+  }
+  const statusNode = document.getElementById('avatarGenerateStatus');
+  if (statusNode && !statusNode.dataset.busy) {
+    statusNode.textContent = avatar?.createdAt ? `最近生成：${avatar.createdAt.replace('T', ' ').slice(0, 16)}` : '还没有生成过形象';
+  }
+}
+
+function ensureEnhancementHub() {
+  return null;
+}
+
+function renderEnhancementHub() {
+  return getEnhancementTasks();
+}
+
+function ensureWelcomeModal() {
+  if (document.getElementById('welcomeModal')) return;
+  document.body.insertAdjacentHTML('beforeend', `
+    <div class="memory-modal welcome-modal" id="welcomeModal" aria-hidden="true">
+      <div class="memory-modal-backdrop" onclick="closeWelcomeModal()"></div>
+      <div class="memory-modal-panel welcome-modal-panel">
+        <div class="memory-modal-head">
+          <div>
+            <span class="page-kicker">第一次开始</span>
+            <h3>先拍一张你的照片，我们就开始</h3>
+          </div>
+        </div>
+        <div class="welcome-modal-grid">
+          <label>
+            <span>怎么称呼你</span>
+            <input id="welcomeNameInput" type="text" placeholder="比如 李阿姨" />
+          </label>
+          <label class="wide">
+            <span>拍一张或选一张你的照片</span>
+            <input id="welcomePhotoInput" type="file" accept="image/*" capture="user" />
+          </label>
+          <div class="welcome-user-preview">
+            <img class="welcome-user-image" id="welcomeUserPreview" hidden />
+            <div>
+              <strong data-user-name>你</strong>
+              <p>你放上照片后会先看到自己的预览。点“开始使用”后，系统会自动给温伴生成一个桌宠形象。</p>
+              <span id="welcomeFlowStatus">只需要这一步，后面还能在设置里改。</span>
+            </div>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <button type="button" onclick="submitWelcomeModal()">开始使用</button>
+        </div>
+      </div>
+    </div>
+  `);
+}
+
+function openWelcomeModal() {
+  document.getElementById('welcomeModal')?.setAttribute('aria-hidden', 'false');
+}
+
+function closeWelcomeModal() {
+  const hasUser = Boolean(getUserCard()?.displayName || getProfile().name);
+  if (!hasUser) return;
+  document.getElementById('welcomeModal')?.setAttribute('aria-hidden', 'true');
+}
+
+function syncWelcomePreview(url = '') {
+  const image = document.getElementById('welcomeUserPreview');
+  if (!image) return;
+  if (url) {
+    image.hidden = false;
+    image.src = url;
+  } else {
+    image.hidden = true;
+    image.removeAttribute('src');
+  }
+}
+
+async function submitWelcomeModal() {
+  const name = document.getElementById('welcomeNameInput')?.value.trim() || DEFAULT_PROFILE.name;
+  const photoFile = document.getElementById('welcomePhotoInput')?.files?.[0] || null;
+  const status = document.getElementById('welcomeFlowStatus');
+  let photoUrl = getUserCard()?.photoUrl || '';
+  let photoId = getUserCard()?.photoId || '';
+  if (status) status.textContent = '正在保存你的资料';
+
+  if (photoFile && /^image\//.test(photoFile.type)) {
+    try {
+      const payload = await uploadPhotoRecord({
+        file: photoFile,
+        caption: '用户头像',
+        source: 'user_profile'
+      });
+      photoUrl = getPhotoUrl(payload.photo);
+      photoId = payload.photo.id;
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  setProfile({
+    ...getProfile(),
+    name
+  });
+  setSettings({
+    ...getSettings(),
+    companionName: getSettings().companionName || DEFAULT_SETTINGS.companionName
+  });
+  await persistUserCard({
+    displayName: name,
+    photoUrl,
+    photoId,
+    updatedAt: nowString()
+  });
+  updateTheme();
+  fillSettingsForm();
+  populateSharedCopy();
+  renderCoverWidgets();
+  renderMemoryMap();
+  if (!getCompanionAvatar()?.url) {
+    if (status) status.textContent = '正在为温伴准备形象';
+    try {
+      const response = await fetch('http://localhost:3001/api/avatar/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companionName: getSettings().companionName,
+          prompt: `${name}的陪伴桌宠，温柔、克制、亲近`,
+          style: '玩偶感桌宠插画，暖色，清爽',
+          scene: '像放在桌面边轻轻陪伴',
+          accent: getSettings().accent
+        })
+      });
+      if (response.ok) {
+        const payload = await response.json();
+        setCompanionAvatar(payload.avatar);
+        renderCompanionAvatar();
+        renderCoverWidgets();
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  if (status) status.textContent = '已经准备好了，正在进入';
+  closeWelcomeModal();
+}
+
 function getLastAssistantText() {
   const lastAssistant = [...getChatHistory()].reverse().find((item) => item.role === 'assistant' && String(item.content || '').trim());
   return String(lastAssistant?.content || '').trim();
+}
+
+function stopSpeaking() {
+  const engine = getSpeechSynthesisEngine();
+  if (!engine) return;
+  engine.cancel();
+  speechSynthesisUtterance = null;
+  document.getElementById('speakBtn')?.classList.remove('active');
+}
+
+function speakText(text, options = {}) {
+  const value = String(text || '').trim();
+  const engine = getSpeechSynthesisEngine();
+  if (!value || !engine || !speechOutputEnabled || options.enabled === false) return;
+  if (typeof SpeechSynthesisUtterance === 'undefined') return;
+
+  stopSpeaking();
+  const utterance = new SpeechSynthesisUtterance(value);
+  utterance.lang = 'zh-CN';
+  utterance.rate = 0.95;
+  utterance.pitch = 1;
+  utterance.volume = 1;
+  utterance.onstart = () => {
+    document.getElementById('speakBtn')?.classList.add('active');
+    setVoiceStatus('温伴正在轻声说话');
+    setStageMode('speaking');
+  };
+  utterance.onend = () => {
+    speechSynthesisUtterance = null;
+    document.getElementById('speakBtn')?.classList.remove('active');
+    setVoiceStatus(voiceInputAvailable ? '语音待命' : '当前浏览器不支持语音输入');
+    setStageMode('idle');
+  };
+  utterance.onerror = () => {
+    speechSynthesisUtterance = null;
+    document.getElementById('speakBtn')?.classList.remove('active');
+    setVoiceStatus('语音播报失败，已回到文字模式');
+    setStageMode('idle');
+  };
+  speechSynthesisUtterance = utterance;
+  engine.speak(utterance);
+}
+
+function toggleSpeechOutput() {
+  speechOutputEnabled = !speechOutputEnabled;
+  const button = document.getElementById('speakBtn');
+  if (button) {
+    button.classList.toggle('muted', !speechOutputEnabled);
+    button.textContent = speechOutputEnabled ? '说' : '静音';
+  }
+  if (!speechOutputEnabled) {
+    stopSpeaking();
+    setVoiceStatus(voiceInputAvailable ? '语音播报已关闭' : '当前浏览器不支持语音输入');
+  } else {
+    setVoiceStatus(voiceInputAvailable ? '语音播报已开启' : '当前浏览器不支持语音输入');
+  }
+  const settings = getSettings();
+  setSettings({
+    ...settings,
+    voiceOutputEnabled: speechOutputEnabled,
+    autoSpeakReply: speechOutputEnabled
+  });
 }
 
 function inferQuestionSlot(questionText = '') {
@@ -4898,6 +5711,7 @@ function candidateToDraftText(candidate) {
 async function requestAI(text, retrieval, replyPlan = buildLocalReplyPlan(text, retrieval)) {
   const settings = getSettings();
   const profile = retrieval.profile;
+  speechOutputEnabled = settings.voiceOutputEnabled !== false;
   const emotion = detectEmotion(text);
   const intent = inferIntent(text);
   const history = getChatHistory().slice(-6).map((item) => ({
@@ -5116,6 +5930,7 @@ async function talk() {
   const input = document.getElementById('userInput');
   const text = input?.value.trim();
   if (!text) return;
+  const replyStart = Date.now();
 
   const history = getChatHistory();
   history.push({ role: 'user', content: text, createdAt: nowString() });
@@ -5154,11 +5969,23 @@ async function talk() {
     const finalReply = safetyCheck.ok
       ? sanitizedReply
       : downgradeReplyBySafety(text, retrieval, replyPlan, safetyCheck.issues);
+    upsertEnhancementTask({
+      label: '主回复快链',
+      detail: `${((Date.now() - replyStart) / 1000).toFixed(1)}s 内返回文字回复`,
+      status: 'success',
+      kind: 'reply',
+      createdAt: nowString(),
+      updatedAt: nowString()
+    });
     history.push({
       role: 'assistant',
       content: finalReply,
       createdAt: nowString()
     });
+    const photoRecallTurn = buildPhotoRecallTurn(text, replyPlan, retrieval);
+    if (photoRecallTurn) {
+      history.push(photoRecallTurn);
+    }
     setChatHistory(history);
     renderChatHistory();
     pushStrategyTrail({
@@ -5172,15 +5999,45 @@ async function talk() {
     setCompanionStatus(replyPlan.selfJudgment || '她正在认真接住你这句话');
     setAmbientQuote(memories[0]?.title || '有些故事不急着说完，今天也可以只说一小段。');
     updateActiveEventContextFromTurn(text, retrieval, replyPlan);
+    appendReplyTrace({
+      traceId: uid('trace'),
+      createdAt: nowString(),
+      userText: text,
+      assistantReply: finalReply,
+      replyPlan,
+      retrieval: {
+        queryFeatures: retrieval.queryFeatures,
+        memories: (retrieval.memories || []).map((item) => ({ id: item.id, title: item.title, timelineLabel: item.timelineLabel })),
+        profileSignals: retrieval.profileSignals,
+        lifeSummaries: retrieval.lifeSummaries
+      },
+      safetyCheck,
+      activeEvent: getActiveEventContext()
+    });
     const fallbackRecap = buildConversationRecap(text, retrieval);
     schedulePostReplyProcessing(() => processReplySideEffects(text, finalReply, retrieval, replyPlan, fallbackRecap));
+    if (getSettings().autoSpeakReply !== false) {
+      window.setTimeout(() => speakText(finalReply), 120);
+    }
   } catch (error) {
     const finalReply = fallbackReply(text, emotion, memories);
+    upsertEnhancementTask({
+      label: '主回复快链',
+      detail: `${((Date.now() - replyStart) / 1000).toFixed(1)}s 内回退到本地回复`,
+      status: 'success',
+      kind: 'reply',
+      createdAt: nowString(),
+      updatedAt: nowString()
+    });
     history.push({
       role: 'assistant',
       content: finalReply,
       createdAt: nowString()
     });
+    const photoRecallTurn = buildPhotoRecallTurn(text, replyPlan, retrieval);
+    if (photoRecallTurn) {
+      history.push(photoRecallTurn);
+    }
     console.error(error);
     setChatHistory(history);
     renderChatHistory();
@@ -5197,6 +6054,21 @@ async function talk() {
     setCompanionStatus(replyPlan.selfJudgment || recap.status);
     setAmbientQuote(recap.quote);
     updateActiveEventContextFromTurn(text, retrieval, replyPlan);
+    appendReplyTrace({
+      traceId: uid('trace'),
+      createdAt: nowString(),
+      userText: text,
+      assistantReply: finalReply,
+      replyPlan,
+      retrieval: {
+        queryFeatures: retrieval.queryFeatures,
+        memories: (retrieval.memories || []).map((item) => ({ id: item.id, title: item.title, timelineLabel: item.timelineLabel })),
+        profileSignals: retrieval.profileSignals,
+        lifeSummaries: retrieval.lifeSummaries
+      },
+      safetyCheck: { ok: false, issues: ['fallback_reply', 'request_failed'] },
+      activeEvent: getActiveEventContext()
+    });
     schedulePostReplyProcessing(async () => {
       setLastChatRecap(recap);
       if (memoryCandidate.memorySignal && memoryCandidate.summary) {
@@ -5204,6 +6076,9 @@ async function talk() {
       }
       renderMemoryCueFloat();
     });
+    if (getSettings().autoSpeakReply !== false) {
+      window.setTimeout(() => speakText(finalReply), 120);
+    }
   }
 
   setChatHistory(history);
@@ -5392,7 +6267,7 @@ function deleteMemory(memoryId) {
 function reuseMemory(memoryId) {
   const memory = getMemories().find((item) => item.id === memoryId);
   if (!memory) return;
-  localStorage.setItem('life_book_memory_draft_v3', `我想继续聊聊这一页：${memory.title}。${memory.content}`);
+  writeStorage(STORAGE_KEYS.memoryDraft, `我想继续聊聊这一页：${memory.title}。${memory.content}`);
   window.location.href = 'chat.html';
 }
 
@@ -5438,11 +6313,33 @@ async function saveMemoryEdit(memoryId = activeMemoryId) {
 }
 
 function syncDraft() {
-  const draft = localStorage.getItem('life_book_memory_draft_v3');
+  const draft = readStorage(STORAGE_KEYS.memoryDraft, '');
   const input = document.getElementById('userInput');
   if (draft && input) {
     input.value = draft;
-    localStorage.removeItem('life_book_memory_draft_v3');
+    clearStorage(STORAGE_KEYS.memoryDraft);
+  }
+}
+
+function applyEntryIntent() {
+  const params = getCurrentUrlParams();
+  const entry = params.get('entry');
+  const page = getPageName();
+  if (entry === 'photo' && (page === 'memory.html' || page === '')) {
+    const photoSection = document.getElementById('photo-entry');
+    const photoInput = document.getElementById('memoryPhotoUploadInput');
+    photoSection?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    window.setTimeout(() => photoInput?.focus(), 120);
+  }
+  if (page === 'memory-map.html') {
+    const view = params.get('view');
+    const query = params.get('q') || '';
+    if (view) {
+      window.setTimeout(() => {
+        focusMemoryMapView(view, query);
+        document.getElementById('bookSectionPeople')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 60);
+    }
   }
 }
 
@@ -5515,6 +6412,8 @@ async function aiGenerateMemory() {
 function fillSettingsForm() {
   const profile = getProfile();
   const settings = getSettings();
+  const avatar = getCompanionAvatar();
+  const userCard = getUserCard();
   const mapping = {
     profileNameInput: profile.name,
     profileRoleInput: profile.role,
@@ -5531,40 +6430,161 @@ function fillSettingsForm() {
     profileMemoriesInput: (profile.keyMemories || []).join('、'),
     companionNameInput: settings.companionName,
     accentInput: settings.accent,
-    fontSizeInput: settings.fontSize
+    fontSizeInput: settings.fontSize,
+    voiceOutputEnabledInput: settings.voiceOutputEnabled !== false ? 'on' : '',
+    autoSpeakReplyInput: settings.autoSpeakReply !== false ? 'on' : '',
+    autoSendVoiceInputInput: settings.autoSendVoiceInput ? 'on' : '',
+    avatarPromptInput: avatar?.prompt || `${settings.companionName}，温柔、克制、安静陪伴的女性形象`,
+    avatarStyleInput: avatar?.style || '书页感插画，暖色，亲近但克制',
+    avatarSceneInput: avatar?.scene || '像在书页舞台边静静陪伴'
   };
   Object.entries(mapping).forEach(([id, value]) => {
     const node = document.getElementById(id);
-    if (node) node.value = value;
+    if (!node) return;
+    if (node.type === 'checkbox') {
+      node.checked = value === 'on';
+      return;
+    }
+    node.value = value;
   });
+  const userCardStatus = document.getElementById('userCardStatus');
+  if (userCardStatus) {
+    userCardStatus.textContent = userCard?.photoUrl ? '当前已经有个人照片，可以重新上传替换' : '还没有放个人照片';
+  }
+  renderCompanionAvatar();
 }
 
-function saveSettingsForm() {
+async function saveSettingsForm() {
+  const userPhotoFile = document.getElementById('userPhotoUploadInput')?.files?.[0] || null;
+  let nextUserCard = getUserCard() || { displayName: '', photoUrl: '', photoId: '', updatedAt: nowString() };
+  const currentProfile = getProfile();
   setProfile({
-    name: document.getElementById('profileNameInput')?.value.trim() || DEFAULT_PROFILE.name,
-    role: document.getElementById('profileRoleInput')?.value.trim() || DEFAULT_PROFILE.role,
-    family: document.getElementById('profileFamilyInput')?.value.trim() || DEFAULT_PROFILE.family,
-    preferences: document.getElementById('profilePreferencesInput')?.value.trim() || DEFAULT_PROFILE.preferences,
-    tone: document.getElementById('profileToneInput')?.value.trim() || DEFAULT_PROFILE.tone,
-    speakingStyle: document.getElementById('profileSpeakingStyleInput')?.value.trim(),
-    worldview: document.getElementById('profileWorldviewInput')?.value.trim(),
-    likes: uniqueStrings((document.getElementById('profileLikesInput')?.value || '').split(/[、，,\n]+/), 8),
-    habits: uniqueStrings((document.getElementById('profileHabitsInput')?.value || '').split(/[、，,\n]+/), 8),
-    goals: uniqueStrings((document.getElementById('profileGoalsInput')?.value || '').split(/[、，,\n]+/), 8),
-    dislikes: uniqueStrings((document.getElementById('profileDislikesInput')?.value || '').split(/[、，,\n]+/), 8),
-    importantPeople: uniqueStrings((document.getElementById('profilePeopleInput')?.value || '').split(/[、，,\n]+/), 8),
-    keyMemories: uniqueStrings((document.getElementById('profileMemoriesInput')?.value || '').split(/[、，,\n]+/), 8)
+    ...currentProfile,
+    name: document.getElementById('profileNameInput')?.value.trim() || currentProfile.name || DEFAULT_PROFILE.name,
+    tone: document.getElementById('profileToneInput')?.value.trim() || currentProfile.tone || DEFAULT_PROFILE.tone
   });
   setSettings({
     companionName: document.getElementById('companionNameInput')?.value.trim() || DEFAULT_SETTINGS.companionName,
     accent: document.getElementById('accentInput')?.value || DEFAULT_SETTINGS.accent,
-    fontSize: document.getElementById('fontSizeInput')?.value || DEFAULT_SETTINGS.fontSize
+    fontSize: document.getElementById('fontSizeInput')?.value || DEFAULT_SETTINGS.fontSize,
+    voiceOutputEnabled: Boolean(document.getElementById('voiceOutputEnabledInput')?.checked),
+    autoSpeakReply: Boolean(document.getElementById('autoSpeakReplyInput')?.checked),
+    autoSendVoiceInput: Boolean(document.getElementById('autoSendVoiceInputInput')?.checked)
   });
+  if (userPhotoFile && /^image\//.test(userPhotoFile.type)) {
+    try {
+      const payload = await uploadPhotoRecord({
+        file: userPhotoFile,
+        caption: '用户头像',
+        source: 'user_profile'
+      });
+      nextUserCard = {
+        ...nextUserCard,
+        displayName: document.getElementById('profileNameInput')?.value.trim() || DEFAULT_PROFILE.name,
+        photoUrl: getPhotoUrl(payload.photo),
+        photoId: payload.photo.id,
+        updatedAt: nowString()
+      };
+      document.getElementById('userPhotoUploadInput').value = '';
+    } catch (error) {
+      console.error(error);
+    }
+  } else {
+    nextUserCard = {
+      ...nextUserCard,
+      displayName: document.getElementById('profileNameInput')?.value.trim() || DEFAULT_PROFILE.name,
+      updatedAt: nowString()
+    };
+  }
+  await persistUserCard(nextUserCard);
   updateTheme();
   populateSharedCopy();
   renderCoverWidgets();
+  renderMemoryPhotoInputWall();
   fillSettingsForm();
   alert('书页气质已经更新。');
+}
+
+async function fetchCompanionAvatar() {
+  try {
+    const response = await fetch('http://localhost:3001/api/avatar');
+    if (!response.ok) throw new Error('avatar read failed');
+    const payload = await response.json();
+    setCompanionAvatar(payload.avatar || null);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function fetchUserCard() {
+  try {
+    const response = await fetch('http://localhost:3001/api/user-card');
+    if (!response.ok) throw new Error('user card read failed');
+    const payload = await response.json();
+    setUserCard(payload.userCard || null);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function persistUserCard(card = {}) {
+  const nextCard = normalizeUserCard(card);
+  setUserCard(nextCard);
+  try {
+    await fetch('http://localhost:3001/api/user-card', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nextCard)
+    });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function generateCompanionAvatar() {
+  const prompt = document.getElementById('avatarPromptInput')?.value.trim() || `${getSettings().companionName}，温柔、克制、安静陪伴的女性形象`;
+  const style = document.getElementById('avatarStyleInput')?.value.trim() || '书页感插画，暖色，亲近但克制';
+  const scene = document.getElementById('avatarSceneInput')?.value.trim() || '像在书页舞台边静静陪伴';
+  const status = document.getElementById('avatarGenerateStatus');
+  if (status) {
+    status.dataset.busy = 'true';
+    status.textContent = '正在生成形象草图';
+  }
+  try {
+    const payload = await runEnhancementTask({
+      label: '形象生成',
+      detail: '正在为温伴生成一张新的形象图',
+      successDetail: '新形象已经保存并同步到页面',
+      errorDetail: '形象生成失败，保留当前版本'
+    }, async () => {
+      const response = await fetch('http://localhost:3001/api/avatar/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companionName: getSettings().companionName,
+          prompt,
+          style,
+          scene,
+          accent: getSettings().accent
+        })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error?.error || 'avatar generation failed');
+      }
+      return response.json();
+    });
+    setCompanionAvatar(payload.avatar);
+    renderCompanionAvatar();
+    renderCoverWidgets();
+    populateSharedCopy();
+    if (status) status.textContent = '形象已经更新并保存';
+  } catch (error) {
+    console.error(error);
+    if (status) status.textContent = '生成失败，稍后再试';
+  } finally {
+    if (status) delete status.dataset.busy;
+  }
 }
 
 function installSearch() {
@@ -5583,6 +6603,250 @@ function installMemoryMapControls() {
   }
   if (view) {
     view.addEventListener('change', renderMemoryMap);
+  }
+}
+
+function installPhotoWallControls() {
+  const chatPhotoInput = document.getElementById('chatPhotoInput');
+  if (chatPhotoInput) {
+    chatPhotoInput.addEventListener('change', () => {
+      handleChatPhotoSelection().catch((error) => console.error(error));
+    });
+  }
+  const uploadInput = document.getElementById('photoUploadInput');
+  if (uploadInput) {
+    uploadInput.addEventListener('change', () => {
+      const file = uploadInput.files?.[0];
+      if (!file) {
+        setPhotoUploadStatus('照片墙待命');
+        return;
+      }
+      setPhotoUploadStatus(`已选中：${compactText(file.name, 24)}`);
+    });
+  }
+  const diaryInput = document.getElementById('memoryPhotoUploadInput');
+  if (diaryInput) {
+    diaryInput.addEventListener('change', () => {
+      const status = document.getElementById('memoryPhotoInputStatus');
+      const file = diaryInput.files?.[0];
+      if (status) status.textContent = file ? `已选中：${compactText(file.name, 24)}` : '可以从一张照片开始';
+    });
+  }
+  const welcomePhotoInput = document.getElementById('welcomePhotoInput');
+  if (welcomePhotoInput) {
+    welcomePhotoInput.addEventListener('change', async () => {
+      const file = welcomePhotoInput.files?.[0];
+      if (!file || !/^image\//.test(file.type)) {
+        syncWelcomePreview('');
+        return;
+      }
+      try {
+        syncWelcomePreview(await fileToDataUrl(file));
+      } catch (error) {
+        console.error(error);
+      }
+    });
+  }
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('file read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadPhotoRecord({
+  file,
+  personId = '',
+  personName = '',
+  memoryId = '',
+  memoryTitle = '',
+  caption = '',
+  source = 'upload'
+} = {}) {
+  if (!file || !/^image\//.test(file.type)) {
+    throw new Error('invalid image file');
+  }
+  const dataUrl = await fileToDataUrl(file);
+  const response = await fetch('http://localhost:3001/api/photos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      fileName: file.name,
+      mimeType: file.type,
+      dataUrl,
+      personId,
+      personName,
+      memoryId,
+      memoryTitle,
+      caption,
+      source
+    })
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error?.error || 'photo upload failed');
+  }
+  const payload = await response.json();
+  const next = [normalizePhotoItem(payload.photo), ...getPhotoItems().filter((item) => item.id !== payload.photo?.id)];
+  setPhotoItems(next);
+  return payload;
+}
+
+async function uploadSelectedPhoto() {
+  const input = document.getElementById('photoUploadInput');
+  const select = document.getElementById('photoPersonSelect');
+  const memorySelect = document.getElementById('photoMemorySelect');
+  const captionInput = document.getElementById('photoCaptionInput');
+  const file = input?.files?.[0];
+  if (!file) {
+    setPhotoUploadStatus('先选一张照片');
+    return;
+  }
+  if (!/^image\//.test(file.type)) {
+    setPhotoUploadStatus('目前只支持图片文件');
+    return;
+  }
+
+  const selectedPersonId = String(select?.value || '').trim();
+  const selectedPerson = getPhotoPeopleOptions().find((item) => item.id === selectedPersonId) || null;
+  const selectedMemoryId = String(memorySelect?.value || '').trim();
+  const selectedMemory = getMemories().find((memory) => memory.id === selectedMemoryId) || null;
+  setPhotoUploadStatus('正在收进照片墙');
+
+  try {
+    const payload = await runEnhancementTask({
+      label: '照片墙上传',
+      detail: '正在把照片收进回忆侧栏',
+      successDetail: '照片已经保存并挂到照片墙',
+      errorDetail: '照片上传失败'
+    }, () => uploadPhotoRecord({
+      file,
+      personId: selectedPerson?.id || '',
+      personName: selectedPerson?.label || '',
+      memoryId: selectedMemory?.id || '',
+      memoryTitle: selectedMemory ? readableMemoryTitle(selectedMemory) : '',
+      caption: captionInput?.value.trim() || '',
+      source: 'gallery'
+    }));
+    renderMemoryMap();
+    if (input) input.value = '';
+    if (captionInput) captionInput.value = '';
+    if (select) select.value = '';
+    if (memorySelect) memorySelect.value = '';
+    setPhotoUploadStatus('照片已经收进来了');
+  } catch (error) {
+    console.error(error);
+    setPhotoUploadStatus('上传失败，先稍后再试');
+  }
+}
+
+async function relinkPhotoPrompt(photoId) {
+  const photo = getPhotoItems().find((item) => item.id === photoId);
+  if (!photo) return;
+  const options = getPhotoPeopleOptions();
+  const currentLabel = photo.personName || '未挂人物';
+  const nextLabel = window.prompt(`这张照片现在挂在：${currentLabel}\n如果想改挂接，输入人物名字；留空表示取消。`, photo.personName || '');
+  if (nextLabel === null) return;
+  const normalizedName = normalizePersonLabel(resolveCanonicalPersonName(nextLabel));
+  const matched = options.find((item) => item.label === normalizedName || item.id === buildCanonicalPersonId(normalizedName));
+  const patch = {
+    personId: normalizedName ? (matched?.id || buildCanonicalPersonId(normalizedName)) : '',
+    personName: normalizedName ? (matched?.label || normalizedName) : ''
+  };
+  try {
+    const response = await fetch(`http://localhost:3001/api/photos/${photoId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    });
+    if (!response.ok) throw new Error('photo relink failed');
+    const payload = await response.json();
+    setPhotoItems(getPhotoItems().map((item) => (item.id === photoId ? normalizePhotoItem(payload.photo) : item)));
+    renderMemoryMap();
+    setPhotoUploadStatus('人物挂接已更新');
+  } catch (error) {
+    console.error(error);
+    setPhotoUploadStatus('改挂接失败');
+  }
+}
+
+async function deletePhotoItem(photoId) {
+  if (!window.confirm('要把这张照片从照片墙里移走吗？')) return;
+  try {
+    const response = await fetch(`http://localhost:3001/api/photos/${photoId}`, {
+      method: 'DELETE'
+    });
+    if (!response.ok) throw new Error('photo delete failed');
+    setPhotoItems(getPhotoItems().filter((item) => item.id !== photoId));
+    renderMemoryMap();
+    setPhotoUploadStatus('照片已移出照片墙');
+  } catch (error) {
+    console.error(error);
+    setPhotoUploadStatus('删除失败，稍后再试');
+  }
+}
+
+async function uploadDiaryPhoto(seedMemory = false) {
+  const input = document.getElementById('memoryPhotoUploadInput');
+  const captionInput = document.getElementById('memoryPhotoCaptionInput');
+  const status = document.getElementById('memoryPhotoInputStatus');
+  const file = input?.files?.[0];
+  if (!file) {
+    if (status) status.textContent = '先选一张照片';
+    return;
+  }
+  try {
+    await uploadPhotoRecord({
+      file,
+      caption: captionInput?.value.trim() || '',
+      source: 'memory_diary'
+    });
+    if (seedMemory) {
+      const memoryInput = document.getElementById('memoryInput');
+      if (memoryInput) {
+        memoryInput.value = captionInput?.value.trim()
+          ? `我想从一张照片开始记：${captionInput.value.trim()}`
+          : '我想从刚刚那张照片开始记。';
+        memoryInput.dispatchEvent(new Event('input'));
+        memoryInput.focus();
+      }
+    }
+    if (input) input.value = '';
+    if (captionInput) captionInput.value = '';
+    if (status) status.textContent = seedMemory ? '照片已收下，你可以接着把这页写出来' : '照片已收进照片墙';
+    renderMemoryMap();
+    renderMemoryPhotoInputWall();
+  } catch (error) {
+    console.error(error);
+    if (status) status.textContent = '照片上传失败，稍后再试';
+  }
+}
+
+function triggerChatPhotoInput() {
+  document.getElementById('chatPhotoInput')?.click();
+}
+
+async function handleChatPhotoSelection() {
+  const input = document.getElementById('chatPhotoInput');
+  const file = input?.files?.[0];
+  if (!file) return;
+  try {
+    await uploadPhotoRecord({
+      file,
+      caption: '聊天中放进来的照片',
+      source: 'chat_entry'
+    });
+    localStorage.setItem(STORAGE_KEYS.memoryDraft, JSON.stringify('我想从刚刚那张照片开始记。'));
+    window.location.href = 'memory.html?entry=photo#photo-entry';
+  } catch (error) {
+    console.error(error);
+    alert('这张照片没有成功收进来，稍后再试。');
+  } finally {
+    if (input) input.value = '';
   }
 }
 
@@ -5652,9 +6916,15 @@ function mountLive2D() {
   });
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+async function initApp() {
+  await fetchVoiceCapabilities();
+  await hydrateStateFromServer();
+  await fetchCompanionAvatar();
+  await fetchUserCard();
   ensureSeedData();
+  await bootstrapServerStateFromLocal();
   ensureMemoryDraftModal();
+  ensureWelcomeModal();
   updateTheme();
   populateSharedCopy();
   renderCoverHighlights();
@@ -5663,27 +6933,39 @@ document.addEventListener('DOMContentLoaded', () => {
   renderMemoryCueFloat();
   renderMemoryCandidates();
   renderMemories();
+  renderMemoryPhotoInputWall();
   renderMemoryMap();
   fillSettingsForm();
   installSearch();
   installMemoryMapControls();
+  installPhotoWallControls();
   installInputSubmit();
   initSpeech();
   syncDraft();
+  applyEntryIntent();
   setCompanionStatus('她正在轻轻看着你');
   setAmbientQuote(getMemories()[0]?.title || '今天也许会翻开新的一页。');
   setStageMode('idle');
+  if (!getUserCard()?.displayName) {
+    openWelcomeModal();
+  }
   window.setTimeout(mountLive2D, 120);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  initApp().catch((error) => console.error(error));
 });
 
 window.addEventListener('storage', (event) => {
-  if (![STORAGE_KEYS.memories, STORAGE_KEYS.memoryCandidates, STORAGE_KEYS.profile, STORAGE_KEYS.lifeSummaries].includes(event.key)) return;
+  if (![STORAGE_KEYS.memories, STORAGE_KEYS.memoryCandidates, STORAGE_KEYS.profile, STORAGE_KEYS.lifeSummaries, STORAGE_KEYS.photos, STORAGE_KEYS.companionAvatar, STORAGE_KEYS.enhancementTasks, STORAGE_KEYS.userCard].includes(event.key)) return;
   personSummaryCache.clear();
   populateSharedCopy();
   renderCoverHighlights();
   renderCoverWidgets();
+  renderCompanionAvatar();
   renderMemoryCueFloat();
   renderMemoryCandidates();
   renderMemories(document.getElementById('memorySearch')?.value.trim() || '');
+  renderMemoryPhotoInputWall();
   renderMemoryMap();
 });

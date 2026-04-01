@@ -22,12 +22,11 @@
           <div class="cover-links" style ="margin-right: 60px !important;">
             <a href="chat.html">温伴</a>
             <a href="memory.html">忆光</a>
-            <a href="setting.html">设置</a>
           </div>
         </nav>
 
         <div class="cover-copy">
-          <span class="cover-eyebrow">一本会陪你慢慢翻开的书</span>
+          <span class="cover-eyebrow">温伴和忆光，会慢慢把日子写成一本书</span>
           <h1 id="coverGreeting">今天想从何处开始呢？</h1>
           <div class="today-strip" id="todayStrip">今日札记正在轻轻展开。</div>
           <section class="presence-panel">
@@ -40,6 +39,7 @@
                 <div class="presence-ring ring-a"></div>
                 <div class="presence-ring ring-b"></div>
                 <div class="presence-heart"></div>
+                <img class="companion-avatar-image presence-avatar-image" data-companion-avatar hidden />
               </div>
               <div class="presence-copy">
                 <strong data-companion-name></strong>
@@ -53,10 +53,12 @@
           </section>
           <div class="cover-actions">
             <a class="primary-link" href="chat.html">开始和她说话</a>
-            <a class="secondary-link" href="memory.html">翻开我的人生之书</a>
+            <a class="secondary-link" href="memory.html">去忆光写下一页</a>
+            <a class="secondary-link" href="memory.html?entry=photo#photo-entry">放一张照片开始</a>
           </div>
           <div class="cover-quick-links">
-            <a href="memory-map.html">去看记忆图谱</a>
+            <a href="setting.html">改名字、改照片、改她的形象</a>
+            <span id="coverAvatarHint">温伴会先陪你说，再慢慢帮你把回忆织起来。</span>
           </div>
         </div>
       </div>
@@ -70,6 +72,7 @@
           <div class="doll-card">
             <span class="doll-card-label">陪伴</span>
             <strong data-companion-name></strong>
+            <img class="companion-avatar-image cover-avatar-image" data-companion-avatar hidden />
             <live2d-widget
               id="coverDoll"
               model="https://cdn.jsdelivr.net/gh/stevenjoezhang/live2d-widget-models@latest/tororo/model.json"
@@ -82,7 +85,7 @@
           </div>
         </section>
         <div class="floating-chip">
-          <span class="floating-chip-label">这一阶段留下的痕迹</span>
+          <span class="floating-chip-label">今天可以从一句话或一张照片开始</span>
           <strong id="coverSummaryTitle">慢慢写下来的，不只是片段</strong>
         </div>
         <div class="quote-card">

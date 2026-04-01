@@ -3,19 +3,89 @@ import cors from 'cors';
 import axios from 'axios';
 import 'dotenv/config';
 import { createRequire } from 'module';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { promises as fs } from 'fs';
+import crypto from 'crypto';
 
 const require = createRequire(import.meta.url);
 const nodejieba = require('nodejieba');
 const natural = require('natural');
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+app.disable('x-powered-by');
+
+const ALLOWED_ORIGIN = String(process.env.ALLOWED_ORIGIN || '').trim();
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    if (!ALLOWED_ORIGIN || origin === ALLOWED_ORIGIN || /^https?:\/\/localhost(?::\d+)?$/.test(origin) || /^https?:\/\/127\.0\.0\.1(?::\d+)?$/.test(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('Origin not allowed by prototype CORS policy.'));
+  }
+}));
+app.use(express.json({ limit: '12mb' }));
 
 const PORT = process.env.PORT || 3001;
 const MODEL_NAME = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
 const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY;
 const DEEPSEEK_URL = 'https://api.deepseek.com/v1/chat/completions';
+const ASR_PROVIDER = process.env.ASR_PROVIDER || 'browser';
+const TTS_PROVIDER = process.env.TTS_PROVIDER || 'browser';
+const FUNASR_URL = process.env.FUNASR_URL || '';
+const TTS_SERVICE_URL = process.env.TTS_SERVICE_URL || '';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DATA_DIR = process.env.APP_DATA_DIR || path.join(__dirname, 'data');
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
+const STATE_FILE = path.join(DATA_DIR, 'app_state.json');
+const TRACE_FILE = path.join(DATA_DIR, 'reply_traces.json');
+const SERVER_STATE_KEYS = [
+  'memories',
+  'chat',
+  'profile',
+  'settings',
+  'lastChatRecap',
+  'memoryCues',
+  'strategyTrail',
+  'memoryCandidates',
+  'lifeSummaries',
+  'activeEventContext',
+  'revisionLogs',
+  'localFacts',
+  'factDatabase',
+  'personAliases',
+  'memoryDraft',
+  'photos',
+  'companionAvatar',
+  'userCard'
+];
+
+const DEFAULT_SERVER_STATE = {
+  memories: [],
+  chat: [],
+  profile: null,
+  settings: null,
+  lastChatRecap: null,
+  memoryCues: [],
+  strategyTrail: [],
+  memoryCandidates: [],
+  lifeSummaries: [],
+  activeEventContext: null,
+  revisionLogs: [],
+  localFacts: [],
+  factDatabase: [],
+  personAliases: [],
+  memoryDraft: null,
+  photos: [],
+  companionAvatar: null,
+  userCard: null
+};
 
 const eventSentenceClassifier = new natural.BayesClassifier();
 [
@@ -41,6 +111,316 @@ eventSentenceClassifier.train();
 const VERB_TAG_PATTERN = /^(v|vn|vd|vi)$/;
 const NOUN_TAG_PATTERN = /^(n|nr|ns|nt|nz|vn|t)$/;
 const EVENT_STOP_WORDS = new Set(['我', '你', '她', '他', '它', '我们', '你们', '他们', '她们', '给', '在', '去', '了', '的', '啊', '呀', '啦', '呢']);
+
+async function ensureDataFiles() {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  await fs.mkdir(UPLOAD_DIR, { recursive: true });
+  try {
+    await fs.access(STATE_FILE);
+  } catch {
+    await fs.writeFile(STATE_FILE, JSON.stringify(DEFAULT_SERVER_STATE, null, 2), 'utf8');
+  }
+  try {
+    await fs.access(TRACE_FILE);
+  } catch {
+    await fs.writeFile(TRACE_FILE, JSON.stringify([], null, 2), 'utf8');
+  }
+}
+
+async function readJsonFile(filePath, fallback) {
+  try {
+    const raw = await fs.readFile(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+async function writeJsonFile(filePath, value) {
+  await fs.writeFile(filePath, JSON.stringify(value, null, 2), 'utf8');
+}
+
+async function readServerState() {
+  await ensureDataFiles();
+  const current = await readJsonFile(STATE_FILE, DEFAULT_SERVER_STATE);
+  return {
+    ...DEFAULT_SERVER_STATE,
+    ...(current && typeof current === 'object' ? current : {})
+  };
+}
+
+async function writeServerState(nextState) {
+  await ensureDataFiles();
+  const safeState = {
+    ...DEFAULT_SERVER_STATE,
+    ...(nextState && typeof nextState === 'object' ? nextState : {})
+  };
+  await writeJsonFile(STATE_FILE, safeState);
+  return safeState;
+}
+
+async function patchServerState(patch = {}) {
+  const current = await readServerState();
+  const next = { ...current };
+  SERVER_STATE_KEYS.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) {
+      next[key] = patch[key];
+    }
+  });
+  return writeServerState(next);
+}
+
+function sanitizeTrace(trace = {}) {
+  return {
+    traceId: String(trace.traceId || '').trim(),
+    createdAt: String(trace.createdAt || '').trim(),
+    userText: String(trace.userText || '').trim(),
+    assistantReply: String(trace.assistantReply || '').trim(),
+    replyPlan: trace.replyPlan && typeof trace.replyPlan === 'object' ? trace.replyPlan : {},
+    retrieval: trace.retrieval && typeof trace.retrieval === 'object' ? trace.retrieval : {},
+    safetyCheck: trace.safetyCheck && typeof trace.safetyCheck === 'object' ? trace.safetyCheck : {},
+    activeEvent: trace.activeEvent && typeof trace.activeEvent === 'object' ? trace.activeEvent : null
+  };
+}
+
+async function appendTrace(trace = {}) {
+  await ensureDataFiles();
+  const traces = await readJsonFile(TRACE_FILE, []);
+  const next = [sanitizeTrace(trace), ...((Array.isArray(traces) ? traces : []).map(sanitizeTrace))].slice(0, 200);
+  await writeJsonFile(TRACE_FILE, next);
+  return next[0];
+}
+
+function sanitizeFileSegment(value = '', fallback = 'photo') {
+  const cleaned = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return cleaned || fallback;
+}
+
+function inferFileExtension(fileName = '', mimeType = '') {
+  const suffix = String(fileName || '').trim().match(/\.([a-z0-9]{2,5})$/i)?.[1]?.toLowerCase();
+  if (suffix) return suffix;
+  if (/png/.test(mimeType)) return 'png';
+  if (/jpeg|jpg/.test(mimeType)) return 'jpg';
+  if (/webp/.test(mimeType)) return 'webp';
+  if (/gif/.test(mimeType)) return 'gif';
+  return 'bin';
+}
+
+function sanitizePhotoRecord(photo = {}) {
+  return {
+    id: String(photo.id || '').trim(),
+    fileName: String(photo.fileName || '').trim(),
+    mimeType: String(photo.mimeType || '').trim(),
+    url: String(photo.url || '').trim(),
+    createdAt: String(photo.createdAt || '').trim(),
+    personId: String(photo.personId || '').trim(),
+    personName: String(photo.personName || '').trim(),
+    memoryId: String(photo.memoryId || '').trim(),
+    memoryTitle: String(photo.memoryTitle || '').trim(),
+    caption: String(photo.caption || '').trim(),
+    source: String(photo.source || 'upload').trim(),
+    status: ['active', 'archived'].includes(String(photo.status || '').trim()) ? String(photo.status || '').trim() : 'active'
+  };
+}
+
+function sanitizePhotoPatch(input = {}) {
+  return {
+    personId: String(input.personId || '').trim(),
+    personName: String(input.personName || '').trim(),
+    memoryId: String(input.memoryId || '').trim(),
+    memoryTitle: String(input.memoryTitle || '').trim(),
+    caption: String(input.caption || '').trim(),
+    status: ['active', 'archived'].includes(String(input.status || '').trim()) ? String(input.status || '').trim() : 'active'
+  };
+}
+
+function sanitizeCompanionAvatar(avatar = {}) {
+  return {
+    id: String(avatar.id || '').trim(),
+    provider: String(avatar.provider || 'local-svg').trim(),
+    url: String(avatar.url || '').trim(),
+    fileName: String(avatar.fileName || '').trim(),
+    createdAt: String(avatar.createdAt || '').trim(),
+    prompt: String(avatar.prompt || '').trim(),
+    style: String(avatar.style || '').trim(),
+    scene: String(avatar.scene || '').trim(),
+    accent: String(avatar.accent || '').trim(),
+    companionName: String(avatar.companionName || '').trim(),
+    status: ['active', 'archived'].includes(String(avatar.status || '').trim()) ? String(avatar.status || '').trim() : 'active'
+  };
+}
+
+function sanitizeUserCard(card = {}) {
+  return {
+    displayName: String(card.displayName || '').trim(),
+    photoUrl: String(card.photoUrl || '').trim(),
+    photoId: String(card.photoId || '').trim(),
+    updatedAt: String(card.updatedAt || '').trim()
+  };
+}
+
+async function appendPhotoRecord(photo = {}) {
+  const current = await readServerState();
+  const nextPhotos = [sanitizePhotoRecord(photo), ...(Array.isArray(current.photos) ? current.photos.map(sanitizePhotoRecord) : [])].slice(0, 400);
+  await patchServerState({ photos: nextPhotos });
+  return nextPhotos[0];
+}
+
+async function updatePhotoRecord(photoId, patch = {}) {
+  const current = await readServerState();
+  const nextPhotos = (Array.isArray(current.photos) ? current.photos : []).map((item) => {
+    const safe = sanitizePhotoRecord(item);
+    if (safe.id !== photoId) return safe;
+    return sanitizePhotoRecord({
+      ...safe,
+      ...sanitizePhotoPatch(patch)
+    });
+  });
+  await patchServerState({ photos: nextPhotos });
+  return nextPhotos.find((item) => item.id === photoId) || null;
+}
+
+async function removePhotoRecord(photoId) {
+  const current = await readServerState();
+  const target = (Array.isArray(current.photos) ? current.photos : []).map(sanitizePhotoRecord).find((item) => item.id === photoId) || null;
+  const nextPhotos = (Array.isArray(current.photos) ? current.photos : []).map(sanitizePhotoRecord).filter((item) => item.id !== photoId);
+  await patchServerState({ photos: nextPhotos });
+  if (target?.url) {
+    const relativePath = target.url.replace(/^\/+/, '');
+    const absolutePath = path.join(__dirname, relativePath);
+    try {
+      await fs.unlink(absolutePath);
+    } catch {
+      // Keep metadata removal successful even if file was already gone.
+    }
+  }
+  return target;
+}
+
+function buildAvatarSeed(input = '') {
+  return crypto.createHash('sha256').update(String(input || '')).digest('hex');
+}
+
+function seedSlice(seed = '', start = 0, length = 2) {
+  return parseInt(seed.slice(start, start + length) || '00', 16);
+}
+
+function shiftHexColor(hex = '#c76645', shift = 0) {
+  const raw = String(hex || '#c76645').replace('#', '').padEnd(6, '6').slice(0, 6);
+  const next = [0, 2, 4].map((index) => {
+    const base = parseInt(raw.slice(index, index + 2), 16);
+    return Math.max(0, Math.min(255, base + shift));
+  });
+  return `#${next.map((value) => value.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function escapeXml(value = '') {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function buildCompanionAvatarSvg({
+  companionName = '温伴',
+  prompt = '',
+  style = '',
+  scene = '',
+  accent = '#c76645'
+} = {}) {
+  const seed = buildAvatarSeed([companionName, prompt, style, scene, accent].join('|'));
+  const paletteA = accent || '#c76645';
+  const paletteB = shiftHexColor(paletteA, 36);
+  const paletteC = shiftHexColor(paletteA, -28);
+  const hair = ['#3f2d27', '#58423a', '#6a4f44', '#4f3a31'][seedSlice(seed, 2, 2) % 4];
+  const skin = ['#f3d9c6', '#efcfba', '#e9c5ac', '#f5dfce'][seedSlice(seed, 4, 2) % 4];
+  const outfit = [paletteA, paletteB, '#7b8c9a', '#6c8a6b'][seedSlice(seed, 6, 2) % 4];
+  const eyeDx = 84 + (seedSlice(seed, 8, 2) % 10);
+  const eyeDy = 146 + (seedSlice(seed, 10, 2) % 8);
+  const smile = 4 + (seedSlice(seed, 12, 2) % 8);
+  const wave = 12 + (seedSlice(seed, 14, 2) % 16);
+  const starX = 66 + (seedSlice(seed, 16, 2) % 320);
+  const starY = 50 + (seedSlice(seed, 18, 2) % 90);
+  const labelTop = escapeXml(style || '温柔陪伴');
+  const labelBottom = escapeXml(scene || prompt || '为她留下一张自己的形象');
+  const title = escapeXml(companionName);
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="768" height="1024" viewBox="0 0 768 1024" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="84" y1="72" x2="660" y2="952" gradientUnits="userSpaceOnUse">
+      <stop stop-color="${paletteB}"/>
+      <stop offset="1" stop-color="${paletteC}"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(384 340) rotate(90) scale(380 280)">
+      <stop stop-color="#FFF7EE" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#FFF7EE" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="768" height="1024" rx="44" fill="url(#bg)"/>
+  <circle cx="384" cy="356" r="308" fill="url(#glow)"/>
+  <path d="M116 824C164 768 242 742 320 738H456C536 742 612 770 654 824V924H116V824Z" fill="#F9F1E6" fill-opacity="0.82"/>
+  <circle cx="384" cy="366" r="170" fill="${skin}"/>
+  <path d="M232 392C224 278 282 186 384 186C486 186 546 278 536 392C520 326 490 292 446 274C412 260 362 262 326 278C278 300 248 334 232 392Z" fill="${hair}"/>
+  <path d="M256 378C260 288 318 228 384 228C450 228 508 288 512 378C484 348 456 330 420 318C398 310 370 310 348 318C312 330 284 348 256 378Z" fill="${hair}" fill-opacity="0.75"/>
+  <ellipse cx="${eyeDx}" cy="${eyeDy}" rx="10" ry="12" fill="#3A2B26"/>
+  <ellipse cx="${768 - eyeDx}" cy="${eyeDy}" rx="10" ry="12" fill="#3A2B26"/>
+  <path d="M354 198C366 190 380 186 396 186C412 186 428 190 440 198" stroke="${hair}" stroke-width="16" stroke-linecap="round"/>
+  <path d="M354 434C374 448 394 448 414 434" stroke="#9A5F52" stroke-width="${smile}" stroke-linecap="round"/>
+  <path d="M312 488C348 506 420 506 456 488V540C456 584 424 620 384 620C344 620 312 584 312 540V488Z" fill="${skin}" fill-opacity="0.92"/>
+  <path d="M242 898C252 724 300 618 384 618C468 618 516 724 526 898H242Z" fill="${outfit}"/>
+  <path d="M300 660C330 680 350 688 384 688C418 688 438 680 468 660" stroke="#FFF7EE" stroke-width="10" stroke-linecap="round" stroke-opacity="0.68"/>
+  <path d="M114 862C208 824 284 810 384 810C484 810 560 824 654 862" stroke="#FFF7EE" stroke-width="4" stroke-opacity="0.18"/>
+  <path d="M110 226C168 162 236 140 308 148" stroke="#FFF7EE" stroke-opacity="0.26" stroke-width="3"/>
+  <path d="M660 230C602 166 534 142 460 150" stroke="#FFF7EE" stroke-opacity="0.26" stroke-width="3"/>
+  <circle cx="${starX}" cy="${starY}" r="8" fill="#FFF7EE" fill-opacity="0.72"/>
+  <circle cx="${700 - starX}" cy="${starY + 62}" r="5" fill="#FFF7EE" fill-opacity="0.52"/>
+  <path d="M160 174C188 182 202 200 206 228" stroke="#FFF7EE" stroke-opacity="0.42" stroke-width="5" stroke-linecap="round"/>
+  <path d="M610 174C582 182 568 200 564 228" stroke="#FFF7EE" stroke-opacity="0.42" stroke-width="5" stroke-linecap="round"/>
+  <rect x="86" y="72" width="248" height="114" rx="24" fill="#FFF7EE" fill-opacity="0.16"/>
+  <text x="112" y="120" fill="#FFF7EE" font-size="28" font-family="PingFang SC, Microsoft YaHei, sans-serif">${title}</text>
+  <text x="112" y="160" fill="#FFF7EE" fill-opacity="0.84" font-size="18" font-family="PingFang SC, Microsoft YaHei, sans-serif">${labelTop}</text>
+  <text x="112" y="192" fill="#FFF7EE" fill-opacity="0.64" font-size="16" font-family="PingFang SC, Microsoft YaHei, sans-serif">${labelBottom}</text>
+  <path d="M120 960C212 906 288 886 384 886C480 886 556 906 648 960" stroke="#FFF7EE" stroke-opacity="0.24" stroke-width="${wave}" stroke-linecap="round"/>
+</svg>`;
+}
+
+async function saveCompanionAvatar({
+  companionName = '温伴',
+  prompt = '',
+  style = '',
+  scene = '',
+  accent = '#c76645'
+} = {}) {
+  await ensureDataFiles();
+  const avatarId = `avatar_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const fileName = `${sanitizeFileSegment(avatarId, 'avatar')}.svg`;
+  const absolutePath = path.join(UPLOAD_DIR, fileName);
+  const svg = buildCompanionAvatarSvg({ companionName, prompt, style, scene, accent });
+  await fs.writeFile(absolutePath, svg, 'utf8');
+  const avatar = sanitizeCompanionAvatar({
+    id: avatarId,
+    provider: 'local-svg',
+    url: `/uploads/${fileName}`,
+    fileName,
+    createdAt: new Date().toISOString(),
+    prompt,
+    style,
+    scene,
+    accent,
+    companionName,
+    status: 'active'
+  });
+  await patchServerState({ companionAvatar: avatar });
+  return avatar;
+}
 
 function extractEventAnalysis(text = '') {
   const value = String(text || '').trim();
@@ -327,8 +707,314 @@ app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
     model: MODEL_NAME,
-    hasApiKey: Boolean(DEEPSEEK_KEY)
+    hasApiKey: Boolean(DEEPSEEK_KEY),
+    dataDir: DATA_DIR
   });
+});
+
+app.get('/api/privacy/summary', (_req, res) => {
+  res.json({
+    productStage: 'prototype_single_user',
+    storage: {
+      stateDir: DATA_DIR,
+      uploadDir: UPLOAD_DIR,
+      storesChat: true,
+      storesMemories: true,
+      storesReplyTraces: true,
+      storesUploadedMedia: true
+    },
+    boundaries: {
+      multiUserIsolation: false,
+      authEnabled: false,
+      encryptionAtRest: false,
+      cloudBackup: false
+    },
+    currentControls: [
+      'Local file-backed persistence only',
+      'Prototype CORS boundary',
+      'Upload size limit',
+      'Sensitive files should stay out of git'
+    ],
+    nextStepsForApp: [
+      'Per-user identity and session isolation',
+      'Database-backed access control',
+      'Encrypted storage for sensitive content',
+      'Consent and deletion flow'
+    ]
+  });
+});
+
+app.get('/api/user-card', async (_req, res) => {
+  try {
+    const state = await readServerState();
+    res.json({
+      userCard: state.userCard ? sanitizeUserCard(state.userCard) : null
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'User card read failed.',
+      detail: error.message
+    });
+  }
+});
+
+app.put('/api/user-card', async (req, res) => {
+  try {
+    const saved = await patchServerState({
+      userCard: sanitizeUserCard({
+        ...(await readServerState()).userCard,
+        ...(req.body || {}),
+        updatedAt: new Date().toISOString()
+      })
+    });
+    res.json({ ok: true, userCard: saved.userCard });
+  } catch (error) {
+    res.status(500).json({
+      error: 'User card write failed.',
+      detail: error.message
+    });
+  }
+});
+
+app.use('/uploads', express.static(UPLOAD_DIR));
+
+app.get('/api/voice/capabilities', (_req, res) => {
+  res.json({
+    asr: {
+      provider: ASR_PROVIDER,
+      browserFallback: true,
+      remoteConfigured: Boolean(FUNASR_URL)
+    },
+    tts: {
+      provider: TTS_PROVIDER,
+      browserFallback: true,
+      remoteConfigured: Boolean(TTS_SERVICE_URL)
+    }
+  });
+});
+
+app.get('/api/avatar/capabilities', (_req, res) => {
+  res.json({
+    provider: process.env.AVATAR_PROVIDER || 'local-svg',
+    remoteConfigured: Boolean(process.env.COMFYUI_URL || process.env.AVATAR_GENERATOR_URL),
+    localFallback: true
+  });
+});
+
+app.get('/api/avatar', async (_req, res) => {
+  try {
+    const state = await readServerState();
+    res.json({
+      avatar: state.companionAvatar ? sanitizeCompanionAvatar(state.companionAvatar) : null
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Avatar read failed.',
+      detail: error.message
+    });
+  }
+});
+
+app.post('/api/avatar/generate', async (req, res) => {
+  try {
+    const avatar = await saveCompanionAvatar(req.body || {});
+    res.status(201).json({ ok: true, avatar });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Avatar generation failed.',
+      detail: error.message
+    });
+  }
+});
+
+app.get('/api/photos', async (_req, res) => {
+  try {
+    const state = await readServerState();
+    res.json({
+      photos: (Array.isArray(state.photos) ? state.photos : []).map(sanitizePhotoRecord)
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Photo list failed.',
+      detail: error.message
+    });
+  }
+});
+
+app.post('/api/photos', async (req, res) => {
+  try {
+    const {
+      fileName = '',
+      mimeType = '',
+      dataUrl = '',
+      personId = '',
+      personName = '',
+      memoryId = '',
+      memoryTitle = '',
+      caption = '',
+      source = 'upload'
+    } = req.body || {};
+
+    const dataUrlText = String(dataUrl || '').trim();
+    const mime = String(mimeType || '').trim().toLowerCase();
+    if (!dataUrlText.startsWith('data:image/')) {
+      res.status(400).json({ error: 'Only image data URLs are supported.' });
+      return;
+    }
+    const match = dataUrlText.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
+    if (!match?.[2]) {
+      res.status(400).json({ error: 'Invalid image payload.' });
+      return;
+    }
+
+    const buffer = Buffer.from(match[2], 'base64');
+    if (!buffer.length) {
+      res.status(400).json({ error: 'Empty image payload.' });
+      return;
+    }
+    if (buffer.length > 6 * 1024 * 1024) {
+      res.status(400).json({ error: 'Image exceeds 6MB limit.' });
+      return;
+    }
+
+    await ensureDataFiles();
+    const photoId = `photo_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const extension = inferFileExtension(fileName, mime || match[1]);
+    const savedFileName = `${sanitizeFileSegment(photoId)}.${extension}`;
+    const absolutePath = path.join(UPLOAD_DIR, savedFileName);
+    await fs.writeFile(absolutePath, buffer);
+
+    const photo = await appendPhotoRecord({
+      id: photoId,
+      fileName: String(fileName || savedFileName).trim() || savedFileName,
+      mimeType: mime || match[1],
+      url: `/uploads/${savedFileName}`,
+      createdAt: new Date().toISOString(),
+      personId: String(personId || '').trim(),
+      personName: String(personName || '').trim(),
+      memoryId: String(memoryId || '').trim(),
+      memoryTitle: String(memoryTitle || '').trim(),
+      caption: String(caption || '').trim(),
+      source: String(source || 'upload').trim(),
+      status: 'active'
+    });
+
+    res.status(201).json({ ok: true, photo });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Photo upload failed.',
+      detail: error.message
+    });
+  }
+});
+
+app.put('/api/photos/:id', async (req, res) => {
+  try {
+    const photo = await updatePhotoRecord(String(req.params.id || '').trim(), req.body || {});
+    if (!photo) {
+      res.status(404).json({ error: 'Photo not found.' });
+      return;
+    }
+    res.json({ ok: true, photo });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Photo update failed.',
+      detail: error.message
+    });
+  }
+});
+
+app.delete('/api/photos/:id', async (req, res) => {
+  try {
+    const removed = await removePhotoRecord(String(req.params.id || '').trim());
+    if (!removed) {
+      res.status(404).json({ error: 'Photo not found.' });
+      return;
+    }
+    res.json({ ok: true, photo: removed });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Photo delete failed.',
+      detail: error.message
+    });
+  }
+});
+
+app.get('/api/state', async (_req, res) => {
+  try {
+    const state = await readServerState();
+    const traces = await readJsonFile(TRACE_FILE, []);
+    res.json({
+      state,
+      traces: Array.isArray(traces) ? traces.slice(0, 30).map(sanitizeTrace) : []
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'State read failed.',
+      detail: error.message
+    });
+  }
+});
+
+app.post('/api/state/bootstrap', async (req, res) => {
+  try {
+    const incoming = req.body?.state || {};
+    const current = await readServerState();
+    const next = { ...current };
+    SERVER_STATE_KEYS.forEach((key) => {
+      const incomingValue = incoming[key];
+      const currentValue = current[key];
+      const incomingHasContent = Array.isArray(incomingValue)
+        ? incomingValue.length > 0
+        : incomingValue && typeof incomingValue === 'object'
+          ? Object.keys(incomingValue).length > 0
+          : Boolean(incomingValue);
+      const currentHasContent = Array.isArray(currentValue)
+        ? currentValue.length > 0
+        : currentValue && typeof currentValue === 'object'
+          ? Object.keys(currentValue).length > 0
+          : Boolean(currentValue);
+      if (!currentHasContent && incomingHasContent) {
+        next[key] = incomingValue;
+      }
+    });
+    const saved = await writeServerState(next);
+    res.json({ ok: true, state: saved });
+  } catch (error) {
+    res.status(500).json({
+      error: 'State bootstrap failed.',
+      detail: error.message
+    });
+  }
+});
+
+app.put('/api/state/:key', async (req, res) => {
+  try {
+    const { key } = req.params;
+    if (!SERVER_STATE_KEYS.includes(key)) {
+      res.status(400).json({ error: 'Unsupported state key.' });
+      return;
+    }
+    const saved = await patchServerState({ [key]: req.body?.value });
+    res.json({ ok: true, key, value: saved[key] });
+  } catch (error) {
+    res.status(500).json({
+      error: 'State write failed.',
+      detail: error.message
+    });
+  }
+});
+
+app.post('/api/traces', async (req, res) => {
+  try {
+    const trace = await appendTrace(req.body || {});
+    res.json({ ok: true, trace });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Trace append failed.',
+      detail: error.message
+    });
+  }
 });
 
 app.post('/api/ai', async (req, res) => {

@@ -15,26 +15,42 @@
       <aside class="page-archive">
         <div class="page-title">
           <span class="page-kicker">忆光</span>
-          <h1>这些被轻轻收好的，都是你的人生篇章</h1>
+          <h1>想留下什么，就从一句话或一张照片开始</h1>
         </div>
 
         <div class="new-chapter-panel">
           <div class="bookmark-tag">新的篇章</div>
-          <textarea id="memoryInput" placeholder="写下一段今天想留下来的话，也可以是一件小事、一个名字、一种气味。"></textarea>
+          <textarea id="memoryInput" placeholder="写下一句今天想留下来的话。哪怕只是一件小事，也可以。"></textarea>
           <div class="panel-actions">
             <button onclick="generateMemory()">先收好</button>
             <button class="ghost-btn" onclick="aiGenerateMemory()">请她帮我整理</button>
           </div>
         </div>
+        <div class="photo-journal-panel" id="photo-entry">
+          <div class="memory-candidate-head">
+            <div>
+              <span class="page-kicker">照片输入</span>
+              <h2>如果今天是从一张照片开始，就先把照片放进来</h2>
+              <p>不急着整理。先放进来，再顺着它写一句就行。</p>
+            </div>
+          </div>
+          <div class="photo-upload-form diary-photo-form">
+            <input id="memoryPhotoUploadInput" type="file" accept="image/*" capture="environment" />
+            <input id="memoryPhotoCaptionInput" type="text" placeholder="你可以写一句，比如 今天和朋友吃饭时拍的" />
+            <button type="button" onclick="uploadDiaryPhoto(true)">从这张照片开始</button>
+          </div>
+          <span class="photo-upload-status" id="memoryPhotoInputStatus">可以从一张照片开始</span>
+          <div class="uploaded-photo-wall" id="memoryPhotoInputWall"></div>
+        </div>
         <div class="page-side-link">
-          <a href="memory-map.html">去按人物、时间、事件整理</a>
+          <a href="memory-map.html">去看已经慢慢长出来的人、时间和照片</a>
         </div>
         <div class="memory-candidate-panel">
           <div class="memory-candidate-head">
             <div>
               <span class="page-kicker">待整理线索</span>
-              <h2>先把聊天里提炼出的有效内容放这里</h2>
-              <p>这里只放还没正式入册的线索。你可以再看一眼，决定保留还是丢掉。</p>
+              <h2>温伴会先把可能有用的内容轻轻放在这里</h2>
+              <p>你不用急着整理，等想看的时候再看一眼就行。</p>
             </div>
             <button class="ghost-btn" id="memoryCandidateToggle" type="button" onclick="toggleMemoryCandidates()">收起</button>
           </div>

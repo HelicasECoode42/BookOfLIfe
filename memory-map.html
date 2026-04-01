@@ -95,10 +95,32 @@
         <section class="memory-photo-wall-section" id="bookSectionPeople" hidden>
           <div class="memory-photo-wall-head">
             <div>
-              <span class="page-kicker">人物相册</span>
-              <h3>一人一格，点开就看这一条回忆线</h3>
+              <span class="page-kicker">照片库</span>
+              <h3>先看照片，再决定要不要把它挂到人物和回忆里</h3>
             </div>
           </div>
+          <div class="photo-upload-panel">
+            <div class="photo-upload-copy">
+              <strong>这里是你的照片库，不是第一次录入向导</strong>
+              <p>先把照片收进来，后面聊天提到人、时间或某件事时，温伴就可以把相关照片召回来问你是不是这张。</p>
+              <div class="memory-map-actions">
+                <button class="ghost-btn" type="button" onclick="window.location.href='memory.html'">去忆光先放照片</button>
+              </div>
+            </div>
+            <div class="photo-upload-form">
+              <input id="photoUploadInput" type="file" accept="image/*" capture="environment" />
+              <select id="photoPersonSelect">
+                <option value="">先不挂人物</option>
+              </select>
+              <select id="photoMemorySelect">
+                <option value="">先不挂记忆</option>
+              </select>
+              <input id="photoCaptionInput" type="text" placeholder="写一句备注，比如今天一起吃饭" />
+              <button type="button" onclick="uploadSelectedPhoto()">收进照片墙</button>
+            </div>
+            <span class="photo-upload-status" id="photoUploadStatus">照片墙待命</span>
+          </div>
+          <div class="uploaded-photo-wall" id="uploadedPhotoWall"></div>
           <div class="memory-photo-wall" id="memoryPhotoWall"></div>
         </section>
 

@@ -25,6 +25,7 @@
           <div class="stage-orbit orbit-one"></div>
           <div class="stage-orbit orbit-two"></div>
           <div class="stage-pulse"></div>
+          <img class="companion-avatar-image stage-avatar-image" data-companion-avatar hidden />
           <div class="companion-plaque">
             <span data-companion-name></span>
             <strong id="companionStatus">她正在轻轻看着你</strong>
@@ -40,11 +41,11 @@
         <div class="page-head">
           <div>
             <span class="page-kicker">今日对话</span>
-            <h2>从一个人、一张照片、一个地方开始</h2>
+            <h2>先说一句。想从照片开始，也可以。</h2>
           </div>
           <div class="head-links">
             <a href="index.html">封面</a>
-            <a href="memory.html">人生之书</a>
+            <a href="memory.html">忆光</a>
           </div>
         </div>
 
@@ -53,12 +54,15 @@
         <div class="chat-entry">
           <div class="entry-shell">
             <button id="voiceBtn" class="round-action" onclick="toggleVoice()">听</button>
+            <button id="chatPhotoBtn" class="round-action" onclick="triggerChatPhotoInput()">照</button>
+            <input id="chatPhotoInput" type="file" accept="image/*" capture="environment" hidden />
             <input id="userInput" type="text" placeholder="慢一点说也没关系，她会等你" />
+            <button id="speakBtn" class="round-action" onclick="toggleSpeechOutput()">说</button>
             <button class="send-action" onclick="talk()">送出</button>
           </div>
           <div class="entry-actions">
+            <span class="voice-status" id="voiceStatus">语音待命</span>
             <button class="ghost-btn" onclick="exportLastToMemory()">收进这一页</button>
-            <button class="ghost-btn" onclick="clearChatHistory()">重新开始</button>
           </div>
         </div>
       </section>
