@@ -5,7 +5,12 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "build:mobile-web": "node scripts/build_mobile_web.mjs",
+    "cap:sync:ios": "node scripts/build_mobile_web.mjs && npx cap sync ios && node scripts/patch_ios_speech_spm.mjs",
+    "cap:open:ios": "npx cap open ios",
     "stage2:smoke": "node scripts/stage2_smoke_check.mjs",
+    "stageM2:app-smoke": "node scripts/stage_m2_app_shell_smoke.mjs",
+    "stageM3:ios-smoke": "node scripts/stage_m3_ios_shell_smoke.mjs",
     "stage9:backend-smoke": "node scripts/stage9_backend_smoke.mjs",
     "stage11:photo-smoke": "node scripts/stage11_photo_wall_smoke.mjs",
     "stage12:avatar-smoke": "node scripts/stage12_avatar_smoke.mjs",
@@ -13,11 +18,19 @@
     "stage14:privacy-smoke": "node scripts/stage14_privacy_smoke.mjs"
   },
   "dependencies": {
+    "@capacitor-community/speech-recognition": "^7.0.1",
+    "@capacitor/camera": "^8.0.2",
+    "@capacitor/cli": "^8.3.0",
+    "@capacitor/core": "^8.3.0",
+    "@capacitor/ios": "^8.3.0",
     "axios": "^1.11.0",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
     "natural": "^8.1.1",
     "nodejieba": "^3.5.8"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.2"
   }
 }
