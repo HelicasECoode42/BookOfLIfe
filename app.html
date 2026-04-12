@@ -609,6 +609,17 @@
       gap: 10px;
     }
 
+    .memory-main-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 2px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      -webkit-overflow-scrolling: touch;
+    }
+
     .stack-card,
     .memory-card,
     .person-card,
@@ -710,7 +721,25 @@
       display: flex;
       flex-direction: column;
       gap: 10px;
-      padding-right: 2px;
+    }
+
+    .timeline-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .timeline-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .timeline-meta {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
     }
 
     .memory-card {
@@ -779,6 +808,7 @@
     }
 
     .graph-topbar {
+      width: 100%;
       flex-shrink: 0;
       padding: 12px 12px 10px;
       border-bottom: 1px solid var(--line);
@@ -809,6 +839,7 @@
       color: var(--muted);
       font-size: 14px;
       flex-shrink: 0;
+      scroll-snap-align: start;
     }
 
     .graph-switch.active {
@@ -879,6 +910,14 @@
       display: flex;
       gap: 8px;
       margin-bottom: 10px;
+      overflow-x: auto;
+      white-space: nowrap;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: 2px;
+    }
+
+    .timeline-controls::-webkit-scrollbar {
+      display: none;
     }
 
     .timeline-chip {
@@ -888,6 +927,7 @@
       background: var(--soft);
       color: var(--muted);
       font-size: 13px;
+      flex-shrink: 0;
     }
 
     .timeline-chip.active {
@@ -919,6 +959,26 @@
 
     .timeline-row:last-child .timeline-track::after {
       display: none;
+    }
+
+    .timeline-item {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px;
+    }
+
+    .timeline-item .tag-row {
+      margin-top: 8px;
+    }
+
+    .timeline-empty {
+      padding: 12px;
+      border-radius: 16px;
+      background: var(--panel);
+      border: 1px dashed var(--line);
+      color: var(--muted);
+      line-height: 1.6;
     }
 
     .timeline-year {
@@ -1581,23 +1641,27 @@
 
           <section class="book-main">
             <input class="search-box" placeholder="搜索人物、地点、情绪" />
-            <div class="book-card-list" id="bookCardList"></div>
+            <div class="memory-main-scroll">
+              <div class="book-card-list" id="bookCardList"></div>
+            </div>
           </section>
         </div>
       </section>
 
       <section id="panelGraph" class="page" data-page="graph" role="tabpanel" aria-hidden="true">
-        <header class="page-header">
+        <header class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
           <div>
             <h2 class="page-title">记忆图谱</h2>
-            <div class="page-subtitle">只展示已经确认并合并后的长期事实</div>
+            <div class="page-subtitle">按每日、人物、事件、时间、地点浏览记忆</div>
           </div>
+          <button type="button" id="graphReviewBtn" style="padding:6px 14px;border-radius:18px;border:1px solid var(--brand,#8b6f5a);background:transparent;color:var(--brand,#8b6f5a);font-size:13px;cursor:pointer;white-space:nowrap;flex-shrink:0;">整理回顾</button>
         </header>
 
         <div class="graph-layout panel-content">
           <div class="graph-topbar">
             <div class="graph-topbar-track">
-              <button type="button" class="graph-switch active" data-graph-view="people">按人物</button>
+              <button type="button" class="graph-switch active" data-graph-view="daily">每日</button>
+              <button type="button" class="graph-switch" data-graph-view="people">按人物</button>
               <button type="button" class="graph-switch" data-graph-view="events">按事件</button>
               <button type="button" class="graph-switch" data-graph-view="timeline">按时间</button>
               <button type="button" class="graph-switch" data-graph-view="places">按地点</button>
@@ -1605,7 +1669,20 @@
           </div>
 
           <div class="graph-scroll">
-            <div class="graph-panel" data-graph-panel="people">
+            <div class="graph-panel" data-graph-panel="daily">
+              <section class="timeline-section">
+                <div class="timeline-head">
+                  <div>
+                    <div class="section-kicker">每日</div>
+                    <strong>每天发生了什么</strong>
+                  </div>
+                  <div class="timeline-meta" id="dailyGraphMeta">日视图展示当天所有记录</div>
+                </div>
+                <div class="timeline-list" id="dailyGraphList"></div>
+              </section>
+            </div>
+
+            <div class="graph-panel hidden" data-graph-panel="people">
               <div class="person-grid" id="personGrid"></div>
               <div class="person-memory-list" id="personMemoryList"></div>
             </div>
@@ -1643,6 +1720,26 @@
               </div>
             </div>
 
+            <div class="profile-section">
+              <div class="timeline-head">
+                <div>
+                  <div class="section-kicker">照片墙</div>
+                  <strong>带时间的照片回看</strong>
+                </div>
+              </div>
+              <div class="photo-grid" id="photoGrid"></div>
+            </div>
+
+            <div class="profile-section">
+              <div class="timeline-head">
+                <div>
+                  <div class="section-kicker">照片脉络</div>
+                  <strong>照片里的时间线索</strong>
+                </div>
+              </div>
+              <div id="photoStoryList"></div>
+            </div>
+
             <div class="profile-section" id="profileSummarySection"></div>
             <div class="profile-section" id="profileInsightSection"></div>
             <div class="profile-section" id="factDatabaseSection"></div>
@@ -1678,8 +1775,10 @@
       activeTab: "chat",
       drawerOpen: false,
       plusOpen: false,
-      graphView: "people",
+      graphView: "daily",
       timelineGranularity: "day",
+      dailyGraphGranularity: "day",
+      dailyGraphTopic: "all",
       selectedPerson: "",
       photoLibraryOpen: false,
       pendingOpen: true,
@@ -1704,6 +1803,7 @@
       profileInsights: null,
       factDatabase: [],
       confirmedFacts: [],
+      dailyLogs: [],
       healthProfile: {
         chronicConditions: [],
         medications: [],
@@ -1715,7 +1815,11 @@
         }
       },
       lastMemoryReminderSignature: "",
+      lastGraphReviewTime: 0,
+      messageCountSinceReview: 0,
+      lastDailyRecapDate: "",
       personAliases: [],
+      moodRecords: [],
       pendingCues: [
         { id: "cue_seed_1", label: "纺织厂夜班那几年", sourceText: "纺织厂夜班那几年", type: "seed", status: "pending" },
         { id: "cue_seed_2", label: "外白渡桥婚纱照", sourceText: "外白渡桥婚纱照", type: "seed", status: "pending" },
@@ -1865,6 +1969,7 @@
     };
 
     const APP_CONFIG = window.__APP_CONFIG__ || {};
+    const PIPELINE_DEBUG = APP_CONFIG.pipelineDebug === true;
     const API_BASE_STORAGE_KEY = "life_book_api_base_v1";
     const API_HEALTH_STORAGE_KEY = "life_book_api_health_v1";
 
@@ -1973,14 +2078,77 @@
       return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
     }
 
+    function getDateKey(value = "") {
+      const date = new Date(value || Date.now());
+      if (Number.isNaN(date.getTime())) return "";
+      const yyyy = date.getFullYear();
+      const mm = String(date.getMonth() + 1).padStart(2, "0");
+      const dd = String(date.getDate()).padStart(2, "0");
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
+    function shiftDateKey(days = 0) {
+      const date = new Date();
+      date.setDate(date.getDate() + Number(days || 0));
+      return getDateKey(date.toISOString());
+    }
+
+    function getMonthKey(value = "") {
+      const date = new Date(value || Date.now());
+      if (Number.isNaN(date.getTime())) return "";
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    }
+
+    function getYearKey(value = "") {
+      const date = new Date(value || Date.now());
+      if (Number.isNaN(date.getTime())) return "";
+      return String(date.getFullYear());
+    }
+
+    function formatDayLabelFromKey(key = "") {
+      const date = new Date(`${key}T12:00:00`);
+      if (Number.isNaN(date.getTime())) return key || "时间待补";
+      return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+    }
+
+    function formatMonthLabelFromKey(key = "") {
+      const match = String(key || "").match(/^(\d{4})-(\d{2})$/);
+      return match ? `${match[1]}年${Number(match[2])}月` : (key || "时间待补");
+    }
+
+    function formatYearLabelFromKey(key = "") {
+      return key ? `${key}年` : "时间待补";
+    }
+
     function classifyMood(text = "") {
       const normalized = String(text || "").trim();
       if (!normalized) return "";
-      if (/(开心|高兴|快乐|兴奋|好玩)/.test(normalized)) return "开心";
+      if (/(开心|高兴|快乐|兴奋|好玩|不错|挺好|还不错)/.test(normalized)) return "开心";
       if (/(想念|怀念|感慨)/.test(normalized)) return "怀念";
       if (/(温暖|团圆|安心)/.test(normalized)) return "温暖";
       if (/(难过|伤心|委屈)/.test(normalized)) return "难过";
+      if (/(烦|焦虑|担心|紧张|不舒服|头疼|胃疼)/.test(normalized)) return "焦虑";
       return "";
+    }
+
+    function inferTimelineAnchor(text = "", fallback = "") {
+      const normalized = `${text || ""} ${fallback || ""}`.trim();
+      const explicit = String(normalized).match(/(20\d{2})[-年](\d{1,2})[-月](\d{1,2})/);
+      if (explicit) {
+        return `${explicit[1]}-${String(explicit[2]).padStart(2, "0")}-${String(explicit[3]).padStart(2, "0")}`;
+      }
+      if (/前天/.test(normalized)) return shiftDateKey(-2);
+      if (/昨天/.test(normalized)) return shiftDateKey(-1);
+      if (/今天/.test(normalized)) return shiftDateKey(0);
+      return getDateKey(fallback || Date.now());
+    }
+
+    function classifyTimelineTopic({ text = "", tags = [], people = [], locations = [] } = {}) {
+      const normalized = `${text || ""} ${(tags || []).join(" ")} ${(people || []).join(" ")} ${(locations || []).join(" ")}`;
+      if (/(血糖|吃药|医院|复诊|头疼|胃疼|不舒服|糖尿病|阿兹海默|睡觉)/.test(normalized)) return "health";
+      if (/(老伴|妈妈|爸爸|女儿|儿子|外孙|外孙女|家里|春节|过年|团圆)/.test(normalized)) return "family";
+      if (/(公园|散步|下棋|打牌|聊天|游戏|洛克王国|刷副本|开黑|旅游|出去玩)/.test(normalized)) return "daily";
+      return "general";
     }
 
     function buildMemoryTagSet({ text = "", date = "", structuredTags = [], people = [], locations = [], mood = "" } = {}) {
@@ -1999,13 +2167,24 @@
     function normalizeMemoryCard(item = {}, index = 0) {
       const content = String(item.content || item.summary || item.text || "").trim();
       const date = String(item.timelineLabel || item.createdAt || item.date || "").trim();
+      const people = Array.isArray(item.people) ? item.people.map((entry) => entry?.name || entry).filter(Boolean) : [];
+      const locations = Array.isArray(item.locations) ? item.locations : [];
+      const mood = Array.isArray(item.emotions) ? item.emotions[0] : String(item.mood || "").trim();
       const tags = buildMemoryTagSet({
         text: content,
         date,
         structuredTags: Array.isArray(item.tags) ? item.tags : [],
-        people: Array.isArray(item.people) ? item.people : [],
-        locations: Array.isArray(item.locations) ? item.locations : [],
-        mood: Array.isArray(item.emotions) ? item.emotions[0] : ""
+        people,
+        locations,
+        mood
+      });
+      const createdAt = String(item.createdAt || "").trim() || toIsoNow();
+      const timelineKey = inferTimelineAnchor(content, date || createdAt);
+      const timelineTopic = classifyTimelineTopic({
+        text: content,
+        tags,
+        people,
+        locations
       });
 
       return {
@@ -2014,7 +2193,13 @@
         text: content || "这是一页还没补全文的回忆。",
         tags,
         detail: String(item.detail || item.followUpQuestion || "这页内容还可以继续补人物、时间和情绪。").trim(),
-        linkedFactId: String(item.linkedFactId || "").trim()
+        linkedFactId: String(item.linkedFactId || "").trim(),
+        createdAt,
+        timelineKey,
+        timelineTopic,
+        people,
+        locations,
+        mood
       };
     }
 
@@ -2026,11 +2211,12 @@
         content: String(card.text || "").trim(),
         timelineLabel: String(card.date || "").trim(),
         tags: Array.isArray(card.tags) ? card.tags : [],
-        people: Array.isArray(card.tags) ? card.tags.slice(0, 2) : [],
-        emotions: Array.isArray(card.tags) ? card.tags.slice(2, 3) : [],
+        people: Array.isArray(card.people) ? card.people : (Array.isArray(card.tags) ? card.tags.slice(0, 2) : []),
+        locations: Array.isArray(card.locations) ? card.locations : [],
+        emotions: card.mood ? [card.mood] : (Array.isArray(card.tags) ? card.tags.slice(2, 3) : []),
         actions: [],
         followUpQuestion: String(card.detail || "").trim(),
-        createdAt: new Date().toISOString(),
+        createdAt: String(card.createdAt || "").trim() || new Date().toISOString(),
         linkedFactId: String(card.linkedFactId || "").trim()
       };
     }
@@ -2123,7 +2309,11 @@
     }
 
     function getConversationPreviewText(conversation = null) {
-      return String(getConversationLastMessage(conversation)?.text || "").trim();
+      const llmSubtitle = String(conversation?.subtitle || "").trim();
+      if (conversation?.subtitleSource === "llm" && llmSubtitle) {
+        return llmSubtitle;
+      }
+      return llmSubtitle || String(getConversationLastMessage(conversation)?.text || "").trim();
     }
 
     function migrateLegacyConversations() {
@@ -2181,6 +2371,7 @@
           state.messages = active.messages.map((item) => normalizeChatMessage(item));
         }
       }
+      ensureDailyConversation();
     }
 
     function getActiveConversation() {
@@ -2369,6 +2560,28 @@
       return compactText(firstUserText, 12) || "新的聊天";
     }
 
+    function deriveConversationTitleFromLLM(summary = "") {
+      const normalized = String(summary || "").trim().replace(/[。！!？?]/g, " ");
+      if (!normalized) return "";
+      const stripped = normalized
+        .replace(/^(今天|昨天|前天|最近|这次|这一轮|这段|聊到|说到|记下了|记住了)/, "")
+        .trim();
+      return compactText(stripped || normalized, 12);
+    }
+
+    function applyConversationLLMSummary(conversation, recap = {}) {
+      if (!conversation || !recap) return;
+      const suggested = String(recap.suggestedMemory || "").trim();
+      if (!suggested) return;
+      const llmTitle = deriveConversationTitleFromLLM(suggested);
+      if (llmTitle) {
+        conversation.title = llmTitle;
+        conversation.titleSource = "llm";
+      }
+      conversation.subtitle = compactText(suggested, 30) || conversation.subtitle || "这段对话还在慢慢形成主题";
+      conversation.subtitleSource = "llm";
+    }
+
     function summarizeThreadMessages(messages = []) {
       const userTexts = messages.filter((item) => item.type === "user").map((item) => item.text).filter(Boolean);
       const latest = messages.slice().reverse().find((item) => item.text && item.type !== "cue")?.text || "";
@@ -2383,6 +2596,52 @@
       return { title, subtitle };
     }
 
+    function getConversationDayId(value = "") {
+      const key = getDateKey(value || Date.now());
+      return key ? `day_${key}` : `day_${Date.now()}`;
+    }
+
+    function buildConversationCarrySummary() {
+      const summary = (state.lifeSummaries || []).find((item) => item?.summary)?.summary
+        || (state.confirmedFacts || []).find((item) => item?.canonicalLabel)?.canonicalLabel
+        || "";
+      return summary ? `昨天聊到这里：${summary}` : "";
+    }
+
+    function ensureDailyConversation() {
+      const todayId = getConversationDayId();
+      const existing = state.conversations.find((item) => item.id === todayId);
+      if (existing) {
+        if (!state.activeConversationId) {
+          state.activeConversationId = existing.id;
+          state.activeChatKey = existing.id;
+          state.messages = existing.messages.map((item) => normalizeChatMessage(item));
+        }
+        return existing;
+      }
+      const carrySummary = buildConversationCarrySummary();
+      const starter = {
+        type: "ai",
+        text: carrySummary
+          ? `新的一天开始了。${carrySummary} 今天你想接着说，还是换一件新鲜事？`
+          : "新的一天开始了。你今天想从哪件小事开始说？",
+        status: "她正在听",
+        createdAt: toIsoNow()
+      };
+      const conversation = normalizeConversation({
+        id: todayId,
+        title: "今天的聊天",
+        subtitle: carrySummary ? compactText(carrySummary, 28) : "今天刚开始的一段新对话",
+        updatedAt: toIsoNow(),
+        messages: [starter]
+      });
+      state.conversations = sortConversationsByUpdatedAt([conversation, ...(state.conversations || []).filter((item) => item.id !== todayId)]);
+      state.activeConversationId = conversation.id;
+      syncLegacyChatStateFromConversations();
+      state.messages = conversation.messages.map((item) => normalizeChatMessage(item));
+      return conversation;
+    }
+
     function persistCurrentThreadSnapshot() {
       ensureConversationState();
       const active = getActiveConversation();
@@ -2390,8 +2649,14 @@
       active.messages = state.messages.map((item) => normalizeChatMessage(item));
       active.updatedAt = active.messages[active.messages.length - 1]?.createdAt || toIsoNow();
       const summary = summarizeThreadMessages(active.messages);
-      active.title = summary.title;
-      active.subtitle = summary.subtitle;
+      if (active.titleSource !== "llm" && active.titleSource !== "manual") {
+        active.title = summary.title;
+        active.titleSource = "rule";
+      }
+      if (active.subtitleSource !== "llm") {
+        active.subtitle = summary.subtitle;
+        active.subtitleSource = "rule";
+      }
       syncLegacyChatStateFromConversations();
     }
 
@@ -2788,6 +3053,7 @@
         return {
           id: `cue_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`,
           label: item,
+          detail: "",
           sourceText: item,
           type: "pending",
           status: "pending"
@@ -2798,6 +3064,7 @@
         id: String(item.id || `cue_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`).trim(),
         label: String(item.label || item.summary || item.sourceText || "").trim() || "待整理线索",
         summary: String(item.summary || "").trim(),
+        detail: String(item.detail || item.narrative || item.content || item.candidate?.draftContent || item.candidate?.narrative || "").trim(),
         sourceText: String(item.sourceText || item.filteredText || item.label || item.summary || "").trim(),
         type: String(item.type || item.candidateType || "pending").trim(),
         status: String(item.status || "pending").trim(),
@@ -2834,6 +3101,34 @@
         label: core,
         summary: subtitle || stamp
       };
+    }
+
+    async function enrichCandidateWithDraft(candidate = {}) {
+      const draftContext = extractCandidateDraftContext(candidate);
+      const rawInput = String(candidate.filteredText || candidate.sourceText || candidate.summary || "").trim();
+      if (!rawInput) return candidate;
+      try {
+        const draft = await withTimeout(
+          requestMemoryDraft(rawInput, "候选预整理", draftContext),
+          8000,
+          "candidate draft timeout"
+        );
+        const polishedSummary = String(draft.summary || "").trim();
+        const polishedContent = String(draft.content || "").trim();
+        return {
+          ...candidate,
+          summary: polishedSummary || String(candidate.summary || "").trim(),
+          narrative: polishedContent || String(candidate.narrative || "").trim(),
+          draftTitle: String(draft.title || "").trim(),
+          draftContent: polishedContent || String(candidate.narrative || candidate.filteredText || "").trim(),
+          draftSummary: polishedSummary || String(candidate.summary || "").trim(),
+          draftMood: String(draft.mood || "").trim(),
+          draftTags: Array.isArray(draft.tags) ? draft.tags : []
+        };
+      } catch (error) {
+        console.error("Candidate draft failed:", error);
+        return candidate;
+      }
     }
 
     function detectExplicitMemorySaveIntent(text = "") {
@@ -2990,28 +3285,31 @@
         timelineLabel: formatAbsoluteTimestamp(toIsoNow())
       };
       removePendingCandidate(candidate.id);
-      const card = buildMemoryCardFromStructured({
-        ...localDraft,
-        linkedFactId: ""
-      }, {
-        content: localDraft.content,
-        summary: localDraft.summary,
-        mood: localDraft.mood,
-        title: localDraft.title,
+
+      const placeholderId = `memory_${Date.now()}`;
+      const placeholderCard = normalizeMemoryCard({
+        id: placeholderId,
+        content: "",
+        summary: "",
+        timelineLabel: localDraft.timelineLabel,
+        tags: [],
+        people: localDraft.people,
+        locations: [],
+        emotions: [],
+        createdAt: toIsoNow(),
         linkedFactId: ""
       });
-      upsertMemoryCard(card);
+      placeholderCard.status = "processing";
+      upsertMemoryCard(placeholderCard);
       renderBookCards();
       renderPendingCues();
       renderProfileSections();
-      await persistMemoriesState();
-      await persistDerivedState();
 
       let finalDraft = localDraft;
       try {
         const draft = await withTimeout(
           requestMemoryDraft(draftInput, "候选线索整理", draftContext),
-          2500,
+          12000,
           "memory draft timeout"
         );
         finalDraft = {
@@ -3023,18 +3321,19 @@
           tags: Array.isArray(draft.tags) ? draft.tags : localDraft.tags
         };
       } catch (error) {
-        console.error(error);
+        console.error("Memory draft failed:", error);
+        finalDraft._isDraftFallback = true;
       }
 
       try {
         const confirmPayload = await withTimeout(
           requestConfirmCandidate(candidate.id, finalDraft.content),
-          3500,
+          12000,
           "confirm candidate timeout"
         );
         applyConfirmedFactsState(confirmPayload);
         const linkedFactId = String(confirmPayload.resolvedFact?.id || "").trim();
-        const upgradedCard = buildMemoryCardFromStructured({
+        const finishedCard = buildMemoryCardFromStructured({
           ...finalDraft,
           linkedFactId
         }, {
@@ -3044,7 +3343,10 @@
           title: finalDraft.title,
           linkedFactId
         });
-        upsertMemoryCard({ ...upgradedCard, id: card.id }, card.id);
+        if (finalDraft._isDraftFallback) {
+          finishedCard.status = "draft";
+        }
+        upsertMemoryCard({ ...finishedCard, id: placeholderId }, placeholderId);
         renderBookCards();
         renderPendingCues();
         renderGraph();
@@ -3052,11 +3354,26 @@
         await persistMemoriesState();
         await syncConfirmedKnowledge();
         await persistDerivedState();
-        return { card: upgradedCard, draft: finalDraft, confirmPayload };
+        return { card: finishedCard, draft: finalDraft, confirmPayload };
       } catch (error) {
         console.error(error);
+        const fallbackCard = buildMemoryCardFromStructured({
+          ...finalDraft,
+          linkedFactId: ""
+        }, {
+          content: finalDraft.content,
+          summary: finalDraft.summary,
+          mood: finalDraft.mood,
+          title: finalDraft.title,
+          linkedFactId: ""
+        });
+        fallbackCard.status = "draft";
+        upsertMemoryCard({ ...fallbackCard, id: placeholderId }, placeholderId);
+        renderBookCards();
+        await persistMemoriesState();
+        await persistDerivedState();
         appendAiReply("这页我先替你收进忆光了，图谱同步刚才慢了一下，等会儿你再点一次我继续补。");
-        return { card, draft: finalDraft, confirmPayload: null };
+        return { card: fallbackCard, draft: finalDraft, confirmPayload: null };
       }
     }
 
@@ -3075,6 +3392,9 @@
         ...state.people.slice(0, 6).map((item) => item.name),
         ...state.places.slice(0, 6).map((item) => item.name)
       ], 8);
+      const inferredPeople = inferPeopleFromTags([], text);
+      const inferredPlaces = inferPlacesFromTags([], text);
+      const inferredTimes = inferTimeFromTags([], text);
       return {
         activeEvent: state.activeEventContext,
         verifiedFacts,
@@ -3083,7 +3403,11 @@
         memories: recentMemories,
         photos: state.photos.slice(0, 6),
         localSignals: {
-          isMetaConversation: /(闪退|权限|按钮|设置|同步|连不上|没保存|app|版本|页面)/.test(String(text || ""))
+          isMetaConversation: /(闪退|权限|按钮|设置|同步|连不上|没保存|app|版本|页面)/.test(String(text || "")),
+          hasPeople: inferredPeople.length > 0,
+          hasPlaces: inferredPlaces.length > 0,
+          hasTimes: inferredTimes.length > 0,
+          mood: classifyMood(text)
         }
       };
     }
@@ -3136,7 +3460,9 @@
 
     async function persistDerivedState() {
       const tasks = [];
+      tasks.push(persistStateKey("dailyLogs", state.dailyLogs).catch((error) => console.error(error)));
       tasks.push(persistStateKey("memoryCandidates", state.memoryCandidates).catch((error) => console.error(error)));
+      tasks.push(persistStateKey("moodRecords", state.moodRecords).catch((error) => console.error(error)));
       tasks.push(persistStateKey("revisionLogs", state.revisionLogs).catch((error) => console.error(error)));
       tasks.push(persistStateKey("activeEventContext", state.activeEventContext).catch((error) => console.error(error)));
       tasks.push(persistStateKey("lastChatRecap", state.lastChatRecap).catch((error) => console.error(error)));
@@ -3147,9 +3473,10 @@
     function inferTimeIntent(text = "") {
       const normalized = String(text || "").trim();
       if (!normalized) return "";
-      if (/(现在|此刻|刚刚|今天)/.test(normalized)) return "今天";
+      if (/前天/.test(normalized)) return "前天";
       if (/昨天/.test(normalized)) return "昨天";
-      if (/(前天|前几天)/.test(normalized)) return "最近几天";
+      if (/(现在|此刻|刚刚|今天)/.test(normalized)) return "今天";
+      if (/前几天/.test(normalized)) return "最近几天";
       if (/(去年|前年)/.test(normalized)) return "往年";
       if (/(小时候|年轻的时候|以前)/.test(normalized)) return "更早以前";
       if (/春节/.test(normalized)) return "春节";
@@ -3286,12 +3613,17 @@
     }
 
     function inferPeopleFromTags(tags = [], text = "") {
+      const normalizedText = String(text || "");
+      const regexPeople = uniqueStrings([
+        ...(normalizedText.match(/(?:老|小|阿)?[\u4e00-\u9fa5]{1,2}(?:姐|姨|叔|伯|哥|嫂|婶|老师|主任|医生)/g) || []),
+        ...(normalizedText.match(/[\u4e00-\u9fa5]{1,3}(?:奶奶|爷爷|外婆|外公|老伴|爱人|同学|师傅)/g) || [])
+      ].map((item) => String(item || "").replace(/^(和|跟|与)/, "")), 8);
       const knownPeople = uniqueStrings([
         ...(state.profileInsights?.importantPeople || []),
         ...(state.personAliases || []).flatMap((item) => [item.canonical, ...(item.aliases || [])]),
-        ...state.people.map((item) => item.name)
+        ...state.people.map((item) => item.name),
+        ...regexPeople
       ].filter((item) => isLikelyPersonLabel(item)), 24);
-      const normalizedText = String(text || "");
       return uniqueStrings(
         (Array.isArray(tags) ? tags : []).filter((tag) => knownPeople.includes(tag) || isLikelyPersonLabel(tag))
           .concat(knownPeople.filter((name) => normalizedText.includes(name))),
@@ -3333,14 +3665,22 @@
       if (/工厂|夜班|班车/.test(text)) fromText.push("工厂岁月");
       if (/下雪|雪人/.test(text)) fromText.push("冬日下雪");
       if (/公园.*碰到|重逢/.test(text)) fromText.push("公园重逢");
-      return uniqueStrings([...fromTags, ...fromText], 3);
+      if (/看电影|电影/.test(text)) fromText.push("看电影");
+      if (/下棋/.test(text)) fromText.push("下棋");
+      if (/计划|挽救计划|安排/.test(text)) fromText.push("计划");
+      return uniqueStrings([...fromTags, ...fromText], 4);
     }
 
     function extractMemorySignals(text = "") {
       const normalized = String(text || "").trim();
       if (!normalized) return [];
       const signals = [];
-      const knownPeople = ["老张", "老伴", "小女儿", "外孙女", "妈妈", "爸爸"];
+      const knownPeople = uniqueStrings(
+        state.confirmedFacts
+          .flatMap((fact) => Array.isArray(fact.relatedPeople) ? fact.relatedPeople : [])
+          .concat(state.people.map((item) => item?.name).filter(Boolean)),
+        20
+      );
       const people = knownPeople.filter((name) => normalized.includes(name));
       const places = inferPlaceHints(normalized);
       const timeLabel = inferTimeIntent(normalized);
@@ -3365,37 +3705,81 @@
       if (/[？?]$/.test(normalized) && /(不好奇|是谁|你猜|你知道|想不想知道)/.test(normalized)) return null;
       if (/^(你好|在吗|嗯|哦|好|好的|哈哈|hh|谢谢|晚安|早上好)$/i.test(normalized)) return null;
 
-      const people = inferPeopleFromTags([], normalized);
-      const places = inferPlacesFromTags([], normalized);
-      const times = inferTimeFromTags([], normalized);
-      const events = inferEventsFromTags([], normalized);
-      const hasNarrativeVerb = /(想起|记得|去了|碰到|看到|拍|吃|玩|打|上班|回家|结婚|过年|聊天|散步)/.test(normalized);
-      const signalScore = people.length + places.length + times.length + events.length + (hasNarrativeVerb ? 1 : 0);
+      const active = state.activeEventContext || {};
+      const directPeople = inferPeopleFromTags([], normalized);
+      const directPlaces = inferPlacesFromTags([], normalized);
+      const directTimes = inferTimeFromTags([], normalized);
+      const directEvents = inferEventsFromTags([], normalized);
+      const directHasAnchor = Boolean(directPeople.length || directPlaces.length || directTimes.length || directEvents.length);
+      const inheritFromActive = Boolean(
+        active
+        && (active.people?.length || active.timelineLabel)
+        && normalized.length <= 18
+        && !/[？?]$/.test(normalized)
+        && !directHasAnchor
+        && /(后来|然后|之后|再后来|还|又|接着)/.test(normalized)
+      );
+      const people = inheritFromActive ? uniqueStrings([...(directPeople || []), ...(active.people || [])], 4) : directPeople;
+      const places = directPlaces;
+      const times = inheritFromActive ? uniqueStrings([...(directTimes || []), ...(active.timelineLabel ? [active.timelineLabel] : [])], 3) : directTimes;
+      const events = inheritFromActive ? uniqueStrings([...(directEvents || []), ...(active.summary ? [compactText(active.summary, 10)] : [])], 4) : directEvents;
+      const hasNarrativeVerb = /(想起|记得|去了|碰到|看到|拍|吃|玩|打|上班|回家|结婚|过年|聊天|散步|下棋|输了|赢了|逛|看病|买菜)/.test(normalized);
+      const mood = classifyMood(normalized);
+      const signalScore = people.length + places.length + times.length + events.length + (hasNarrativeVerb ? 1 : 0) + (mood ? 1 : 0);
       const hasStrongPersonSignal = people.length > 0;
-      if (signalScore < 2 && !hasStrongPersonSignal) return null;
+      const hasStrongTimePlaceSignal = Boolean(times.length && places.length);
+      const hasPersonEventSignal = Boolean(people.length && (events.length || hasNarrativeVerb));
+      const hasTimeEventSignal = Boolean(times.length && (events.length || hasNarrativeVerb));
+      const isPlainDailyRecord = Boolean(
+        !people.length
+        && !places.length
+        && !mood
+        && !inheritFromActive
+        && hasNarrativeVerb
+        && events.length <= 1
+      );
+      const isOnlyLightDailyAction = Boolean(
+        times.length
+        && !people.length
+        && !places.length
+        && !mood
+        && events.length <= 1
+        && /^(今天|昨天|前天)?(?:在家)?(?:看电视|休息|睡觉|吃饭|喝水|发呆|坐着)$/.test(normalized.replace(/[，。！？!?\s]/g, ""))
+      );
+      if (isOnlyLightDailyAction) return null;
+      if (isPlainDailyRecord) return null;
+      if (signalScore < 2 && !hasStrongPersonSignal && !hasStrongTimePlaceSignal && !hasPersonEventSignal && !hasTimeEventSignal) return null;
 
       const summary = events[0]
         ? `${events[0]}${people.length ? `｜${people.join("、")}` : ""}`
         : hasStrongPersonSignal
           ? `${people.join("、")}相关线索`
-        : `${people[0] || places[0] || times[0] || "这段回忆"}${places[0] ? `｜${places[0]}` : ""}`;
+          : `${people[0] || places[0] || times[0] || "这段回忆"}${places[0] ? `｜${places[0]}` : ""}`;
 
       return {
         filteredText: normalized,
         memorySignal: true,
-        candidateType: "event",
-        confidence: 0.62,
+        candidateType: people.length && !events.length && !places.length && !times.length ? "person_clue" : (times.length && !people.length && !places.length && !events.length ? "daily_fragment" : "event_memory"),
+        confidence: hasStrongPersonSignal || hasStrongTimePlaceSignal || hasPersonEventSignal || hasTimeEventSignal ? 0.78 : 0.62,
         people,
         timeType: times.length ? "relative" : "none",
-        timeRef: times[0] || null,
+        timeRef: times[0] ? { normalizedLabel: times[0], rawText: times[0] } : null,
         timeConfidence: times.length ? 0.66 : 0,
-        isComplete: signalScore >= 3,
+        isComplete: signalScore >= 3 && (hasNarrativeVerb || people.length || places.length || events.length),
         summary,
         narrative: normalized,
-        missingPieces: [],
-        followUpHint: "可以继续补一句当时的地点、人物或感受。",
+        missingPieces: [
+          ...(people.length ? [] : ["人物"]),
+          ...(times.length ? [] : ["时间"]),
+          ...(places.length || /家里|公园|学校|医院|工厂|桥|影院|电影院/.test(normalized) ? [] : ["地点"])
+        ].slice(0, 3),
+        followUpHint: inheritFromActive
+          ? "这句更像在补刚才那件事，后面如果再补地点或结果，会更容易整理成完整片段。"
+          : (mood && !people.length && !places.length ? "如果后面补上人物或地点，这条心情会更容易挂到具体生活片段里。" : "可以继续补一句当时的地点、人物或感受。"),
         noiseFiltered: [],
-        reason: "本地兜底识别到人物/地点/时间/事件信号，先进入待整理线索。"
+        reason: inheritFromActive
+          ? "本地兜底把这句识别成上一段事件的补充，先进入待整理线索。"
+          : "本地兜底识别到人物/地点/时间/事件信号，先进入待整理线索。"
       };
     }
 
@@ -3416,14 +3800,17 @@
 
     function pushMemoryCandidate(candidate = {}) {
       const id = candidate.id || `candidate_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`;
-      const candidateSummary = buildCandidateSummary({
+      const polishedLabel = String(candidate.draftSummary || candidate.summary || "").trim();
+      const polishedDetail = String(candidate.draftContent || candidate.narrative || "").trim();
+      const fallbackSummary = buildCandidateSummary({
         ...candidate,
         createdAt: candidate.createdAt || toIsoNow()
       }, candidate.filteredText || candidate.summary || "");
       const entry = {
         id,
-        label: candidateSummary.label,
-        summary: candidateSummary.summary,
+        label: polishedLabel || fallbackSummary.label,
+        summary: polishedLabel || fallbackSummary.summary,
+        detail: polishedDetail,
         sourceText: candidate.filteredText || candidate.summary || "",
         type: candidate.candidateType || "candidate",
         status: "pending",
@@ -3441,6 +3828,283 @@
     function updateCompanionStatus(text) {
       const status = text || [...state.messages].reverse().find((item) => item.type === "ai")?.status || "她正在听";
       document.getElementById("companionStatus").textContent = status;
+    }
+
+    function normalizeMoodRecord(item = {}, index = 0) {
+      const createdAt = String(item.createdAt || "").trim() || toIsoNow();
+      const timelineKey = String(item.timelineKey || inferTimelineAnchor(item.sourceText || item.summary || "", createdAt)).trim() || getDateKey(createdAt);
+      return {
+        id: String(item.id || `mood_${Date.now()}_${index}`).trim(),
+        mood: String(item.mood || "").trim(),
+        summary: String(item.summary || "").trim(),
+        sourceText: String(item.sourceText || "").trim(),
+        createdAt,
+        timelineKey,
+        topic: String(item.topic || "daily").trim()
+      };
+    }
+
+    function normalizeDailyLog(item = {}, index = 0) {
+      const createdAt = String(item.createdAt || "").trim() || toIsoNow();
+      const sourceText = String(item.sourceText || item.text || "").trim();
+      const summary = String(item.summary || sourceText || "").trim() || "今天记下一件小事";
+      const people = uniqueStrings(Array.isArray(item.people) ? item.people : inferPeopleFromTags([], sourceText), 4);
+      const locations = uniqueStrings(Array.isArray(item.locations) ? item.locations : inferPlacesFromTags([], sourceText), 3);
+      const tags = uniqueStrings(Array.isArray(item.tags) ? item.tags : inferEventsFromTags([], sourceText), 4);
+      const mood = String(item.mood || classifyMood(sourceText)).trim();
+      const timelineKey = String(item.timelineKey || inferTimelineAnchor(sourceText, createdAt)).trim() || getDateKey(createdAt);
+      return {
+        id: String(item.id || `daily_${Date.now()}_${index}`).trim(),
+        sourceText,
+        summary,
+        createdAt,
+        timelineKey,
+        people,
+        locations,
+        tags,
+        mood,
+        topic: String(item.topic || classifyTimelineTopic({ text: sourceText, tags, people, locations })).trim() || "daily"
+      };
+    }
+
+    function isDailyLogCandidate(text = "", options = {}) {
+      const value = String(text || "").trim();
+      if (!value) return false;
+      if (/(你不好奇|你猜|你知道吗|在吗|你好|谢谢|哈哈|嗯嗯|哦哦|测试|系统|按钮|设置|闪退|版本|权限)/.test(value)) return false;
+      const people = Array.isArray(options.people) ? options.people : inferPeopleFromTags([], value);
+      const places = Array.isArray(options.locations) ? options.locations : inferPlacesFromTags([], value);
+      const times = Array.isArray(options.times) ? options.times : inferTimeFromTags([], value);
+      const events = Array.isArray(options.events) ? options.events : inferEventsFromTags([], value);
+      const active = options.activeEvent || state.activeEventContext || {};
+      const hasDailyAction = /(看|去|写|做|吃|喝|聊|逛|打|玩|拍|回|见|买|听|说|讲|商量|下棋|看电影|散步|看电视|休息|睡觉|做饭|买菜|通电话|打电话)/.test(value);
+      const hasAnchor = people.length || places.length || times.length || events.length;
+      const inheritsActive = Boolean(active && (active.people?.length || active.timelineLabel) && value.length <= 20 && hasDailyAction);
+      if (times.length && hasDailyAction) return true;
+      if (people.length && hasDailyAction) return true;
+      if (places.length && hasDailyAction) return true;
+      if (hasAnchor && classifyMood(value)) return true;
+      if (inheritsActive) return true;
+      return false;
+    }
+
+    function buildDailyLogSummary(text = "", options = {}) {
+      const value = String(text || "").trim();
+      const people = Array.isArray(options.people) ? options.people : inferPeopleFromTags([], value);
+      const places = Array.isArray(options.locations) ? options.locations : inferPlacesFromTags([], value);
+      const times = Array.isArray(options.times) ? options.times : inferTimeFromTags([], value);
+      const events = Array.isArray(options.events) ? options.events : inferEventsFromTags([], value);
+      const mood = String(options.mood || classifyMood(value)).trim();
+      const eventLabel = events[0] || "";
+      const timeLabel = times[0] || "";
+      if (timeLabel && people[0] && eventLabel) return `${timeLabel}和${people[0]}${eventLabel}`;
+      if (timeLabel && people[0]) return `${timeLabel}和${people[0]}的一件小事`;
+      if (timeLabel && places[0] && eventLabel) return `${timeLabel}在${places[0]}${eventLabel}`;
+      if (timeLabel && eventLabel) return `${timeLabel}${eventLabel}`;
+      if (people[0] && eventLabel) return `和${people[0]}${eventLabel}`;
+      if (places[0] && eventLabel) return `在${places[0]}${eventLabel}`;
+      if (mood && timeLabel) return `${timeLabel}心情${mood}`;
+      return compactText(value, 20) || "今天记下一件小事";
+    }
+
+    function upsertDailyLogFromText(text = "") {
+      const sourceText = String(text || "").trim();
+      const people = inferPeopleFromTags([], sourceText);
+      const locations = inferPlacesFromTags([], sourceText);
+      const times = inferTimeFromTags([], sourceText);
+      const events = inferEventsFromTags([], sourceText);
+      const mood = classifyMood(sourceText);
+      if (!isDailyLogCandidate(sourceText, { people, locations, times, events })) return null;
+      const timelineKey = inferTimelineAnchor(sourceText, toIsoNow());
+      const summary = buildDailyLogSummary(sourceText, { people, locations, times, events, mood });
+      const fingerprint = [timelineKey, people[0] || "", events[0] || "", compactText(sourceText, 18)].join("|");
+      const existing = state.dailyLogs.find((item) => {
+        const existingKey = [item.timelineKey, item.people?.[0] || "", item.tags?.[0] || "", compactText(item.sourceText || "", 18)].join("|");
+        return existingKey === fingerprint || item.sourceText === sourceText;
+      });
+      const next = normalizeDailyLog({
+        ...(existing || {}),
+        sourceText,
+        summary,
+        createdAt: existing?.createdAt || toIsoNow(),
+        timelineKey,
+        people,
+        locations,
+        tags: events,
+        mood,
+        topic: classifyTimelineTopic({ text: sourceText, tags: events, people, locations })
+      });
+      if (existing) {
+        state.dailyLogs = state.dailyLogs.map((item) => item.id === existing.id ? next : item);
+      } else {
+        state.dailyLogs.unshift(next);
+      }
+      state.dailyLogs = state.dailyLogs.slice(0, 120);
+      return next;
+    }
+
+    function upsertMoodRecordFromText(text = "") {
+      const mood = classifyMood(text);
+      if (!mood) return null;
+      const timelineKey = inferTimelineAnchor(text, toIsoNow());
+      const summary = mood === "开心"
+        ? "今天心情不错"
+        : mood === "难过"
+          ? "今天情绪有点低落"
+          : mood === "焦虑"
+            ? "今天状态有点不舒服"
+            : `今天有一点${mood}`;
+      const existing = state.moodRecords.find((item) => item.timelineKey === timelineKey && item.mood === mood);
+      const next = normalizeMoodRecord({
+        ...(existing || {}),
+        mood,
+        summary,
+        sourceText: String(text || "").trim(),
+        createdAt: existing?.createdAt || toIsoNow(),
+        timelineKey,
+        topic: classifyTimelineTopic({ text, tags: [mood] })
+      });
+      if (existing) {
+        state.moodRecords = state.moodRecords.map((item) => item.id === existing.id ? next : item);
+      } else {
+        state.moodRecords.unshift(next);
+      }
+      state.moodRecords = state.moodRecords.slice(0, 40);
+      return next;
+    }
+
+    function buildDiaryTimelineEntries() {
+      const dailyEntries = state.dailyLogs.map((item) => ({
+        id: `daily_${item.id}`,
+        type: "daily",
+        label: item.summary,
+        detail: item.sourceText,
+        timelineKey: item.timelineKey,
+        createdAt: item.createdAt,
+        topic: item.topic || "daily",
+        important: Boolean(item.people?.length || item.locations?.length || item.tags?.length >= 1),
+        landmark: false,
+        mood: item.mood || "",
+        tags: uniqueStrings([...(item.tags || []), ...(item.people || []), ...(item.locations || []), ...(item.mood ? [item.mood] : [])], 5)
+      }));
+      const memoryEntries = state.memoryCards.map((item) => ({
+        id: `memory_${item.id}`,
+        type: "memory",
+        label: item.text,
+        detail: item.detail,
+        timelineKey: item.timelineKey || inferTimelineAnchor(item.text, item.date || item.createdAt || ""),
+        createdAt: item.createdAt || toIsoNow(),
+        topic: item.timelineTopic || classifyTimelineTopic({ text: item.text, tags: item.tags, people: item.people, locations: item.locations }),
+        important: Boolean(item.people?.length || item.locations?.length || (item.tags || []).some((tag) => /老张|老伴|家|厂|桥|医院|学校/.test(tag))),
+        landmark: Boolean((item.linkedFactId || "").trim() || /结婚|婚纱照|毕业|住院|退休|搬家|春节/.test(item.text || "")),
+        mood: item.mood || "",
+        tags: item.tags || []
+      }));
+      const moodEntries = state.moodRecords.map((item) => ({
+        id: `mood_${item.id}`,
+        type: "mood",
+        label: item.summary,
+        detail: item.sourceText,
+        timelineKey: item.timelineKey,
+        createdAt: item.createdAt,
+        topic: item.topic || "daily",
+        important: false,
+        landmark: false,
+        mood: item.mood,
+        tags: [item.mood].filter(Boolean)
+      }));
+      return [...memoryEntries, ...dailyEntries, ...moodEntries]
+        .filter((item) => item.timelineKey)
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    }
+
+    function renderDailyGraph() {
+      const root = document.getElementById("dailyGraphList");
+      const meta = document.getElementById("dailyGraphMeta");
+      if (!root) return;
+      const entries = buildDiaryTimelineEntries();
+      const granularity = state.dailyGraphGranularity || "day";
+      const topic = state.dailyGraphTopic || "all";
+      const topicOptions = [
+        { key: "all", label: "全部" },
+        { key: "family", label: "家庭" },
+        { key: "health", label: "健康" },
+        { key: "daily", label: "日常" },
+        { key: "general", label: "其他" }
+      ];
+      const filteredEntries = entries.filter((item) => {
+        if (topic !== "all" && item.topic !== topic) return false;
+        if (granularity === "month" && item.type === "mood") return false;
+        if (granularity === "year" && item.type === "mood") return false;
+        if (granularity === "month" && !item.important && !item.landmark) return false;
+        if (granularity === "year" && !item.landmark) return false;
+        return true;
+      });
+      const buckets = new Map();
+      filteredEntries.forEach((item) => {
+        const bucketKey = granularity === "year"
+          ? getYearKey(`${item.timelineKey}T12:00:00`)
+          : granularity === "month"
+            ? getMonthKey(`${item.timelineKey}T12:00:00`)
+            : item.timelineKey;
+        if (!bucketKey) return;
+        if (!buckets.has(bucketKey)) buckets.set(bucketKey, []);
+        buckets.get(bucketKey).push(item);
+      });
+      const bucketList = [...buckets.entries()].sort((a, b) => String(b[0]).localeCompare(String(a[0])));
+      if (meta) {
+        meta.textContent = granularity === "day"
+          ? "日视图展示当天所有记录，包括心情"
+          : granularity === "month"
+            ? "月视图只保留较重要的人物、地点和事件"
+            : "年视图只保留年度标志性事件";
+      }
+      root.innerHTML = `
+        <div class="timeline-controls">
+          ${[
+            { key: "day", label: "日视图" },
+            { key: "month", label: "月视图" },
+            { key: "year", label: "年视图" }
+          ].map((item) => `
+            <button type="button" class="timeline-chip ${granularity === item.key ? "active" : ""}" data-memory-granularity="${item.key}">${item.label}</button>
+          `).join("")}
+          ${topicOptions.map((item) => `
+            <button type="button" class="timeline-chip ${topic === item.key ? "active" : ""}" data-memory-topic="${item.key}">${item.label}</button>
+          `).join("")}
+        </div>
+        ${bucketList.length ? bucketList.map(([bucketKey, items]) => `
+          <div class="timeline-row">
+            <div class="timeline-track">
+              <div class="timeline-year">${escapeHtml(granularity === "year" ? formatYearLabelFromKey(bucketKey) : granularity === "month" ? formatMonthLabelFromKey(bucketKey) : formatDayLabelFromKey(bucketKey))}</div>
+            </div>
+            <div style="display:grid;gap:10px;flex:1;">
+              ${items.map((item) => `
+                <div class="timeline-item">
+                  <strong>${escapeHtml(item.label || "这段时间还在整理")}</strong>
+                  <span>${escapeHtml(item.detail || "这段内容还在继续补充。")}</span>
+                  <div class="tag-row">
+                    ${uniqueStrings([
+                      item.type === "mood" && item.mood ? `心情：${item.mood}` : "",
+                      ...(Array.isArray(item.tags) ? item.tags.map((tag) => compactText(tag, 12)) : [])
+                    ].filter(Boolean), 5).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}
+                  </div>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        `).join("") : `<div class="timeline-empty">现在还没有能放进这个视图的记录。先在温伴里聊，再确认进忆光。</div>`}
+      `;
+      root.querySelectorAll("[data-memory-granularity]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.dailyGraphGranularity = button.dataset.memoryGranularity || "day";
+          renderDailyGraph();
+        });
+      });
+      root.querySelectorAll("[data-memory-topic]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.dailyGraphTopic = button.dataset.memoryTopic || "all";
+          renderDailyGraph();
+        });
+      });
     }
 
     function renderChrome() {
@@ -3485,6 +4149,7 @@
     }
 
     function logPipelineStep(label, payload = {}) {
+      if (!PIPELINE_DEBUG) return;
       try {
         console.log(`[pipeline] ${label}`, payload);
       } catch (error) {
@@ -3632,13 +4297,10 @@
       const input = document.getElementById("chatInput");
       const value = String(input.value || "").trim();
       if (!value) return;
-      const conversation = getActiveConversation();
-      if (conversation && conversation.title === "新的聊天") {
-        conversation.title = deriveThreadTitleFromText(value);
-        conversation.subtitle = "刚刚继续了一段新对话";
-        syncLegacyChatStateFromConversations();
-      }
+      ensureDailyConversation();
       appendUserMessage(value);
+      const dailyLogEntry = upsertDailyLogFromText(value);
+      upsertMoodRecordFromText(value);
       input.value = "";
       await persistChatState();
       await maybeCaptureHealthProfile(value);
@@ -3687,19 +4349,20 @@
       }
 
       let candidate = await candidatePromise;
+      // NOTE: deriveLocalMemoryCandidate 主入口已停用——LLM 判断不记时不再由本地规则覆盖
       if (!candidate?.memorySignal) {
-        const localCandidate = deriveLocalMemoryCandidate(value, replyPlan);
-        if (localCandidate) {
-          candidate = localCandidate;
-        }
+        mergePendingCues(extractMemorySignals(value));
+        await persistDerivedState();
       }
       logPipelineStep("memory-filter", candidate || { memorySignal: false });
       if (candidate?.memorySignal) {
+        candidate = await enrichCandidateWithDraft(candidate);
         const existing = state.memoryCandidates.find((item) => {
           const sourceText = String(item.sourceText || "").trim();
           const label = String(item.label || "").trim();
+          const polishedSummary = String(candidate.draftSummary || candidate.summary || "").trim();
           return sourceText === String(candidate.filteredText || "").trim()
-            || label === String(candidate.summary || "").trim();
+            || (polishedSummary && label === polishedSummary);
         });
 
         const entry = existing || pushMemoryCandidate(candidate);
@@ -3715,10 +4378,11 @@
         state.activeEventContext = buildActiveEventFromTurn(value, replyPlan, candidate);
         renderChat();
         renderPendingCues();
+        renderDailyGraph();
         openSheet("candidateDecision", {
           candidateId: entry.id,
           label: entry.label,
-          text: entry.sourceText
+          text: entry.detail || entry.sourceText
         });
         await persistDerivedState();
       } else if (replyPlan?.eventLinkAction && replyPlan.eventLinkAction !== "uncertain") {
@@ -3771,6 +4435,17 @@
 
           if (recap) {
             state.lastChatRecap = recap;
+            const activeConversation = getActiveConversation();
+            applyConversationLLMSummary(activeConversation, recap);
+            if (dailyLogEntry?.id && String(recap.suggestedMemory || "").trim()) {
+              state.dailyLogs = state.dailyLogs.map((item) => item.id === dailyLogEntry.id
+                ? normalizeDailyLog({
+                    ...item,
+                    summary: recap.suggestedMemory
+                  })
+                : item);
+              await persistStateKey("dailyLogs", state.dailyLogs).catch((error) => console.error(error));
+            }
           }
 
           if (profileInsightsPayload) {
@@ -3820,13 +4495,23 @@
 
           renderPendingCues();
           renderGraph();
+          renderDailyGraph();
+          renderPhotoGrid();
+          renderPhotoStoryList();
           renderProfileSections();
           await persistChatState();
           await persistDerivedState();
           renderDrawer();
+          state.messageCountSinceReview += 1;
+          if (state.messageCountSinceReview >= 15) {
+            maybeAutoGraphReview();
+          }
         } catch (error) {
           console.error(error);
           await persistChatState();
+          renderDailyGraph();
+          renderPhotoGrid();
+          renderPhotoStoryList();
           renderProfileSections();
           renderDrawer();
         }
@@ -3921,10 +4606,19 @@
           }));
           state.voiceListenerHandles.push(await plugin.addListener("finalResult", (data) => {
             const text = Array.isArray(data?.matches) ? String(data.matches[0] || "").trim() : "";
-            if (text) applyVoiceTranscript(text, targetInputId);
+            if (text) {
+              applyVoiceTranscript(text, targetInputId);
+              setVoiceState({ listening: true, mode: "native", targetInputId, transcript: text, error: "" });
+            }
             void stopVoiceInput("final");
           }));
           state.voiceListenerHandles.push(await plugin.addListener("speechError", (data) => {
+            const recognizedText = String(state.voiceTranscriptDraft || "").trim();
+            if (recognizedText) {
+              console.warn("[voice:native:error-after-transcript]", data);
+              void stopVoiceInput("final");
+              return;
+            }
             const detail = [data?.message, data?.domain, data?.code].filter((item) => String(item || "").trim()).join(" | ");
             const reason = normalizeVoiceErrorMessage(detail);
             console.error("[voice:native:error]", data);
@@ -4152,6 +4846,8 @@
           url: item.url ? `${getApiBaseUrl()}${item.url}` : "",
           caption: item.caption || ""
         }));
+      renderPhotoGrid();
+      renderPhotoStoryList();
     }
 
     function pickPhoto(mode = "sheet") {
@@ -4397,6 +5093,17 @@
       const root = document.getElementById("bookCardList");
       root.innerHTML = state.memoryCards.map((item) => {
         const isOpen = state.openCards.has(item.id);
+        if (item.status === "processing") {
+          return `
+            <article class="memory-card processing" data-card-id="${item.id}">
+              <div class="card-top">
+                <span class="card-date">${escapeHtml(item.date)}</span>
+              </div>
+              <div class="card-text" style="color:var(--text-hint,#999);font-style:italic;">温伴正在帮你整理这段记忆...</div>
+            </article>
+          `;
+        }
+        const draftHint = item.status === "draft" ? `<div class="card-text" style="color:var(--text-hint,#999);font-size:12px;">（整理未完成，显示的是原始内容）</div>` : "";
         return `
           <article class="memory-card ${isOpen ? "open" : ""}" data-card-id="${item.id}">
             <div class="card-top">
@@ -4406,6 +5113,7 @@
                 <button type="button" class="fix-link" data-delete-card="${item.id}">删除</button>
               </div>
             </div>
+            ${draftHint}
             <div class="card-text">${escapeHtml(item.text)}</div>
             <div class="tag-row">
               ${item.tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}
@@ -4457,6 +5165,7 @@
           await persistMemoriesState();
         });
       });
+      renderDailyGraph();
     }
 
     function renderPendingCues() {
@@ -4469,15 +5178,21 @@
       }
       root.innerHTML = cues.map((rawItem, index) => {
         const item = normalizePendingCueItem(rawItem);
-        const summary = String(rawItem?.summary || item.summary || "").trim();
-        return `<button type="button" class="pending-item" data-pending-index="${index}">${escapeHtml(item.label)}${summary ? `｜${escapeHtml(summary)}` : ""}</button>`;
+        const detail = String(item.detail || item.summary || item.sourceText || "").trim();
+        const preview = detail && detail !== item.label ? compactText(detail, 34) : "";
+        return `
+          <button type="button" class="pending-item" data-pending-index="${index}" style="text-align:left;">
+            <strong style="display:block;color:var(--text);font-size:14px;line-height:1.5;">${escapeHtml(item.label)}</strong>
+            ${preview ? `<span style="display:block;margin-top:4px;color:var(--muted);font-size:13px;line-height:1.5;">${escapeHtml(preview)}</span>` : ""}
+          </button>
+        `;
       }).join("");
 
       root.querySelectorAll("[data-pending-index]").forEach((button) => {
         button.addEventListener("click", () => {
           const value = normalizePendingCueItem(state.pendingCues[Number(button.dataset.pendingIndex)] || {});
           openSheet("candidateDecision", {
-            text: value.sourceText ? `我想整理这条线索：${value.sourceText}` : `我想整理这条线索：${value.label}`,
+            text: value.detail || value.summary || value.sourceText || value.label,
             candidateId: value.id,
             label: value.label
           });
@@ -4496,11 +5211,75 @@
       return /(照片线索|这张照片|照片故事|上传照片|photo_story)/.test(String(fingerprint || ""));
     }
 
+    const EVENT_TYPE_MAP = {
+      "看电影": "兴趣爱好", "健身": "健康管理", "散步": "健康管理", "广场舞": "社交活动",
+      "广场活动": "社交活动", "医院就诊": "就医复查", "复查": "就医复查", "拿药": "就医复查",
+      "旅游": "兴趣爱好", "买菜购物": "生活照顾", "下棋": "兴趣爱好", "打牌": "兴趣爱好",
+      "打麻将": "兴趣爱好", "游戏": "兴趣爱好", "家庭聚餐": "社交活动", "串门": "社交活动",
+      "聚会": "社交活动", "做饭": "生活照顾", "看病": "就医复查", "遛弯": "健康管理",
+      "钓鱼": "兴趣爱好", "唱歌": "兴趣爱好", "跳舞": "兴趣爱好", "读书": "兴趣爱好",
+      "看电视": "兴趣爱好", "写字画画": "兴趣爱好", "种花种菜": "兴趣爱好",
+      "带孩子": "生活照顾", "接送孩子": "生活照顾", "探亲": "社交活动", "祭扫": "社交活动",
+      "理发": "生活照顾", "配眼镜": "就医复查", "体检": "就医复查"
+    };
+    const EVENT_CATEGORIES = ["兴趣爱好", "健康管理", "社交活动", "就医复查", "生活照顾"];
+
+    function matchEventType(text = "") {
+      const normalized = String(text || "").trim();
+      if (!normalized) return { eventType: "", eventCategory: "" };
+      if (EVENT_TYPE_MAP[normalized]) return { eventType: normalized, eventCategory: EVENT_TYPE_MAP[normalized] };
+      for (const [type, category] of Object.entries(EVENT_TYPE_MAP)) {
+        if (normalized.includes(type) || type.includes(normalized)) {
+          return { eventType: type, eventCategory: category };
+        }
+      }
+      return { eventType: "", eventCategory: "" };
+    }
+
     function deriveGraphData() {
       const peopleMap = new Map();
       const eventsMap = new Map();
       const timelineMap = new Map();
       const placeMap = new Map();
+      const pushPersonMemory = (personName, memoryLabel) => {
+        if (!personName || !memoryLabel) return;
+        const entry = peopleMap.get(personName) || { name: personName, count: 0, memories: [] };
+        entry.count += 1;
+        entry.memories.push(memoryLabel);
+        peopleMap.set(personName, entry);
+      };
+      const pushEvent = (eventName, detail, weight = 1, explicitType = "", explicitCategory = "", dateKey = "") => {
+        if (!eventName) return;
+        const matched = explicitType ? { eventType: explicitType, eventCategory: explicitCategory || EVENT_TYPE_MAP[explicitType] || "其他" } : matchEventType(eventName);
+        const resolvedName = matched.eventType || eventName;
+        const resolvedCategory = matched.eventCategory || "其他";
+        const eventEntry = eventsMap.get(resolvedName) || { name: resolvedName, category: resolvedCategory, count: 0, details: [], dates: new Set() };
+        if (dateKey) {
+          eventEntry.dates.add(dateKey);
+          eventEntry.count = eventEntry.dates.size;
+        } else if (!eventEntry.dates.size) {
+          eventEntry.count += weight;
+        }
+        if (detail && eventEntry.details.length < 6) {
+          eventEntry.details.push(detail);
+        }
+        eventEntry.detail = eventEntry.details.slice(0, 3).join("；");
+        eventsMap.set(resolvedName, eventEntry);
+      };
+      const pushPlace = (placeName, detail) => {
+        if (!placeName) return;
+        const placeEntry = placeMap.get(placeName) || { name: placeName, count: 0, details: [] };
+        placeEntry.count += 1;
+        placeEntry.details.push(detail);
+        placeMap.set(placeName, placeEntry);
+      };
+      const pushTimeline = (timeLabel, title) => {
+        if (!timeLabel || !title) return;
+        const bucket = timelineMap.get(timeLabel) || { year: timeLabel, titles: [] };
+        bucket.titles.push(title);
+        timelineMap.set(timeLabel, bucket);
+      };
+
       (Array.isArray(state.confirmedFacts) ? state.confirmedFacts : []).forEach((fact) => {
         if (shouldHideGraphFact(fact)) return;
         const canonicalLabel = String(fact.canonicalLabel || fact.label || fact.object || "").trim();
@@ -4513,29 +5292,62 @@
         const locations = Array.isArray(fact.locations) ? fact.locations : [];
 
         people.forEach((person) => {
-          const entry = peopleMap.get(person) || { name: person, count: 0, memories: [] };
-          entry.count += 1;
-          entry.memories.push(canonicalLabel);
-          peopleMap.set(person, entry);
+          pushPersonMemory(person, canonicalLabel);
         });
 
-        const eventName = `${predicate}${fact.object ? `｜${fact.object}` : ""}` || canonicalLabel;
-        const eventEntry = eventsMap.get(eventName) || { name: eventName, detail: "" };
-        eventEntry.detail = `${eventEntry.detail ? `${eventEntry.detail}；` : ""}${detail}`;
-        eventsMap.set(eventName, eventEntry);
+        const objectText = String(fact.object || "").trim();
+        const combinedText = `${predicate}${objectText}`;
+        const objectMatch = matchEventType(objectText);
+        const combinedMatch = matchEventType(combinedText);
+        const canonicalMatch = matchEventType(canonicalLabel);
+        const bestMatch = objectMatch.eventType ? objectMatch : (combinedMatch.eventType ? combinedMatch : canonicalMatch);
+        const eventName = bestMatch.eventType || canonicalLabel;
+        const factDateKey = getDateKey(fact.updatedAt || fact.createdAt || "");
+        if (eventName && eventName.length >= 2 && eventName.length <= 20) {
+          pushEvent(eventName, detail, 1, bestMatch.eventType, bestMatch.eventCategory, factDateKey);
+        }
 
         locations.forEach((place) => {
-          const placeEntry = placeMap.get(place) || { name: place, count: 0, details: [] };
-          placeEntry.count += 1;
-          placeEntry.details.push(canonicalLabel);
-          placeMap.set(place, placeEntry);
+          pushPlace(place, canonicalLabel);
         });
 
         timeLabels.forEach((label) => {
-          const bucket = timelineMap.get(label) || { year: label, titles: [] };
-          bucket.titles.push(canonicalLabel);
-          timelineMap.set(label, bucket);
+          pushTimeline(label, canonicalLabel);
         });
+      });
+
+      (Array.isArray(state.dailyLogs) ? state.dailyLogs : []).forEach((log) => {
+        const summary = String(log.summary || log.sourceText || "").trim();
+        if (!summary) return;
+        const people = uniqueStrings(Array.isArray(log.people) ? log.people : [], 6);
+        const places = uniqueStrings(Array.isArray(log.locations) ? log.locations : [], 4);
+        const tags = uniqueStrings(Array.isArray(log.tags) ? log.tags : [], 4);
+        const timelineKey = String(log.timelineKey || getDateKey(log.createdAt || toIsoNow())).trim();
+        const detail = String(log.sourceText || summary).trim();
+
+        people.forEach((person) => {
+          pushPersonMemory(person, summary);
+        });
+
+        if (tags.length) {
+          tags.forEach((tag) => {
+            const tagMatch = matchEventType(tag);
+            if (tagMatch.eventType) {
+              pushEvent(tag, detail, 1, tagMatch.eventType, tagMatch.eventCategory, timelineKey);
+            }
+          });
+        } else {
+          const summaryMatch = matchEventType(summary);
+          if (summaryMatch.eventType) {
+            pushEvent(summary, detail, 1, summaryMatch.eventType, summaryMatch.eventCategory, timelineKey);
+          }
+        }
+
+        places.forEach((place) => {
+          pushPlace(place, summary);
+        });
+
+        pushTimeline(timelineKey, summary);
       });
 
       const people = [...peopleMap.values()]
@@ -4546,8 +5358,14 @@
         .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"));
       const events = [...eventsMap.values()].map((item) => ({
         name: item.name,
-        detail: compactText(item.detail, 36) || "这条事件还在慢慢补全。"
-      })).sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+        category: item.category || "其他",
+        count: item.count,
+        detail: `${item.count > 1 ? `${item.count} 天 · ` : ""}${compactText(item.detail, 36) || "这条事件还在慢慢补全。"}`
+      })).sort((a, b) => {
+        const catOrder = EVENT_CATEGORIES.indexOf(a.category) - EVENT_CATEGORIES.indexOf(b.category);
+        if (a.category !== b.category) return catOrder !== 0 ? catOrder : a.category.localeCompare(b.category, "zh-CN");
+        return b.count - a.count || a.name.localeCompare(b.name, "zh-CN");
+      });
       const places = [...placeMap.values()]
         .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"))
         .map((item) => ({
@@ -4569,14 +5387,39 @@
     function renderEvents() {
       const root = document.getElementById("eventGrid");
       if (!root) return;
-      root.innerHTML = state.events.length
-        ? state.events.map((item) => `
-          <article class="event-card">
-            <strong>${escapeHtml(item.name)}</strong>
-            <span>${escapeHtml(item.detail)}</span>
-          </article>
-        `).join("")
-        : `<div class="pending-item">图谱现在只展示已确认事实。先去忆光确认几条候选，再回来查看。</div>`;
+      if (!state.events.length) {
+        root.innerHTML = `<div class="pending-item">这里会汇总每日记录和已确认记忆里的事件。先去温伴聊几句，或在忆光确认一条候选。</div>`;
+        return;
+      }
+      const grouped = new Map();
+      state.events.forEach((item) => {
+        const cat = item.category || "其他";
+        if (!grouped.has(cat)) grouped.set(cat, []);
+        grouped.get(cat).push(item);
+      });
+      const categoryOrder = [...EVENT_CATEGORIES, "其他"];
+      const sortedCategories = [...grouped.keys()].sort((a, b) => {
+        const ai = categoryOrder.indexOf(a);
+        const bi = categoryOrder.indexOf(b);
+        return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+      });
+      root.innerHTML = sortedCategories.map((cat) => {
+        const items = grouped.get(cat) || [];
+        const totalCount = items.reduce((sum, item) => sum + item.count, 0);
+        return `
+          <div class="event-category-group">
+            <div class="event-category-header" style="font-size:13px;color:var(--text-hint,#888);margin:12px 0 6px;border-bottom:1px solid var(--border,#eee);padding-bottom:4px;">
+              ${escapeHtml(cat)}<span style="margin-left:6px;font-size:12px;color:var(--text-hint,#aaa);">${totalCount} 天</span>
+            </div>
+            ${items.map((item) => `
+              <article class="event-card">
+                <strong>${escapeHtml(item.name)}<span style="margin-left:8px;font-size:12px;color:var(--text-hint,#888);font-weight:400;">累计 ${escapeHtml(String(item.count))} 天</span></strong>
+                <span>${escapeHtml(item.detail)}</span>
+              </article>
+            `).join("")}
+          </div>
+        `;
+      }).join("");
     }
 
 function renderGraph() {
@@ -4585,12 +5428,14 @@ function renderGraph() {
       state.events = derived.events;
       state.places = derived.places;
       state.timeline = derived.timeline;
+      switchGraphView(state.graphView || "daily");
       if (state.selectedPerson && !state.people.some((item) => item.name === state.selectedPerson)) {
         state.selectedPerson = "";
       }
       renderPeople();
       renderEvents();
       renderPersonMemories();
+      renderDailyGraph();
       renderTimeline();
       renderPlaces();
     }
@@ -4610,27 +5455,38 @@ function renderGraph() {
         const normalized = normalizePendingCueItem(candidate || payload || {});
         const isReviewedReminder = candidate?.type === "reviewed";
         const isMergeSuggestion = candidate?.type === "merge_suggestion";
+        const polishedText = String(candidate?.candidate?.draftContent || candidate?.candidate?.narrative || normalized.detail || "").trim();
+        const evidenceText = String(normalized.sourceText || payload.text || "我先帮你挂住了这条线索。").trim();
         kicker.textContent = "温伴";
         title.textContent = isMergeSuggestion ? "确认是否合并事实" : "确认一条候选记忆";
         body.innerHTML = `
           <div class="sheet-setting-card">
             <strong>${escapeHtml(normalized.label || "这条线索值得收一下")}</strong>
-            <p class="graph-description" style="margin-top:8px;">${escapeHtml(normalized.sourceText || payload.text || "我先帮你挂住了这条线索。")}</p>
+            <p class="graph-description" style="margin-top:8px;">${escapeHtml(polishedText || evidenceText)}</p>
+            ${polishedText && polishedText !== evidenceText ? `<p class="graph-description" style="margin-top:8px;color:var(--muted);">原话：${escapeHtml(evidenceText)}</p>` : ""}
             <p class="graph-description" style="margin-top:8px;">${isMergeSuggestion ? `系统觉得它可能和已有事实是一条，原因：${escapeHtml(candidate?.mergeReason || "语义相近")}。你确认后再合并。` : (isReviewedReminder ? "这条总结值得先提醒你确认。你可以稍后整理，或直接收录。" : "确认后会直接收进忆光，并同步到记忆图谱。")}</p>
           </div>
           <div class="sheet-actions">
             <button type="button" class="sheet-secondary" id="candidateLaterBtn">${isReviewedReminder ? "稍后整理" : "一会儿再说"}</button>
+            <button type="button" class="sheet-secondary" id="candidateDeleteBtn">删除线索</button>
             <button type="button" class="sheet-primary" id="candidateNowBtn">${isMergeSuggestion ? "确认合并" : "直接收录"}</button>
           </div>
         `;
         body.querySelector("#candidateLaterBtn").addEventListener("click", async () => {
+          closeSheet();
           if (normalized.id) {
             deferCandidate(normalized.id);
             await persistDerivedState();
           }
+          renderPendingCues();
+        });
+        body.querySelector("#candidateDeleteBtn").addEventListener("click", async () => {
           closeSheet();
-          state.pendingOpen = true;
-          document.getElementById("pendingList").classList.add("open");
+          if (normalized.id) {
+            removePendingCandidate(normalized.id);
+            renderPendingCues();
+            await persistDerivedState();
+          }
         });
         body.querySelector("#candidateNowBtn").addEventListener("click", async () => {
           const primaryBtn = body.querySelector("#candidateNowBtn");
@@ -4661,15 +5517,19 @@ function renderGraph() {
           }
           if (!candidate) return;
           try {
-            closeSheet();
-            confirmCandidateIntoMemory(candidate, normalized.sourceText || payload.text || "").catch((error) => {
-              console.error(error);
-              appendAiReply("这条记忆刚才没收进去，我先把线索留住了。你可以再点一次，或者先去忆光里手动整理。");
-            });
+            if (primaryBtn) {
+              primaryBtn.textContent = "正在整理...";
+            }
+            const preferredText = String(candidate?.candidate?.draftContent || polishedText || normalized.sourceText || payload.text || "").trim();
+            const result = await confirmCandidateIntoMemory(candidate, preferredText);
             state.lastMemoryReminderSignature = `${String(candidate.label || "").trim()}__${String(candidate.sourceText || "").trim()}`;
+            closeSheet();
+            if (result?.card?.status === "draft") {
+              appendAiReply("这页记忆我先收进忆光了，不过整理没来得及完成，内容还是原始文字。你可以稍后在忆光里编辑。");
+            }
           } catch (error) {
             console.error(error);
-            appendAiReply("这条记忆刚才没收进去，我先把线索留住了。你可以再点一次，或者先去忆光里手动整理。");
+            appendAiReply("这条记忆刚才没收进去，你可以再点一次。");
             if (primaryBtn) {
               primaryBtn.disabled = false;
               primaryBtn.textContent = "直接收录";
@@ -4706,6 +5566,7 @@ function renderGraph() {
         body.querySelector("#saveMemoryBtn").addEventListener("click", async () => {
           const input = body.querySelector("#sheetMemoryInput");
           const value = String(input.value || "").trim() || "今天写下了一页新的回忆。";
+          closeSheet();
           try {
             const draftContext = payload.candidateId
               ? extractCandidateDraftContext(state.memoryCandidates.find((item) => item.id === payload.candidateId) || payload)
@@ -4750,7 +5611,6 @@ function renderGraph() {
             await persistMemoriesState();
             await syncConfirmedKnowledge();
             await persistDerivedState();
-            closeSheet();
           } catch (error) {
             console.error(error);
             const fallbackCard = buildMemoryCardFromStructured({
@@ -4769,7 +5629,6 @@ function renderGraph() {
             renderBookCards();
             renderGraph();
             await persistMemoriesState();
-            closeSheet();
           }
         });
       }
@@ -5190,12 +6049,41 @@ function renderGraph() {
         }
       }
 
+      if (type === "graphReview") {
+        const suggestions = payload.suggestions || [];
+        kicker.textContent = "图谱";
+        title.textContent = "整理回顾建议";
+        body.innerHTML = `
+          <div style="max-height:60vh;overflow-y:auto;">
+            ${suggestions.map((s, i) => `
+              <div style="background:var(--card-bg,#fff);border-radius:12px;padding:12px;margin-bottom:10px;border:1px solid var(--border,#eee);">
+                <div style="font-size:12px;color:var(--text-hint,#888);margin-bottom:4px;">
+                  ${escapeHtml(s.type === "duplicate" ? "重复事实" : s.type === "promotion" ? "建议确认" : s.type === "draft_cleanup" ? "草稿整理" : "建议")}
+                </div>
+                <p style="margin:0;font-size:14px;line-height:1.5;">${escapeHtml(s.suggestion || "")}</p>
+                ${s.labelA ? `<p style="font-size:12px;color:var(--text-hint);margin:4px 0 0;">「${escapeHtml(s.labelA)}」与「${escapeHtml(s.labelB || "")}」</p>` : ""}
+              </div>
+            `).join("")}
+          </div>
+          <div style="display:flex;justify-content:center;padding:12px 0;">
+            <button type="button" class="sheet-secondary" id="reviewDismissBtn">知道了</button>
+          </div>
+        `;
+        body.querySelector("#reviewDismissBtn")?.addEventListener("click", closeSheet);
+      }
+
       overlay.classList.add("open");
       sheet.classList.add("open");
       sheet.setAttribute("aria-hidden", "false");
     }
 
     function closeSheet() {
+      if (state.voiceListening) {
+        state.voiceListening = false;
+        state.voiceInputMode = "idle";
+        renderVoiceCaptureState();
+        stopVoiceInput("manual").catch((e) => console.error("closeSheet voice cleanup:", e));
+      }
       state.activeSheet = "";
       document.getElementById("modalOverlay").classList.remove("open");
       document.getElementById("sheetModal").classList.remove("open");
@@ -5231,7 +6119,7 @@ function renderGraph() {
       root.innerHTML = visiblePeople.map((person) => `
         <button type="button" class="person-card" data-person="${person.name}">
           <strong>${escapeHtml(person.name)}</strong>
-          <span>关联 ${person.count} 段记忆</span>
+          <span>关联 ${person.count} 条记录</span>
         </button>
       `).join("");
 
@@ -5317,7 +6205,7 @@ function renderPersonMemories() {
             </button>
           `).join("")}
         </div>
-        ${items.map((item) => `
+        ${items.length ? items.map((item) => `
         <div class="timeline-row">
           <div class="timeline-track">
             <div class="timeline-year">${escapeHtml(item.year)}</div>
@@ -5327,7 +6215,7 @@ function renderPersonMemories() {
             <span>${escapeHtml(item.detail)}</span>
           </div>
         </div>
-        `).join("")}
+        `).join("") : `<div class="timeline-empty">这里会显示已确认记忆和每日记录的时间线。</div>`}
       `;
       root.querySelectorAll("[data-timeline-granularity]").forEach((button) => {
         button.addEventListener("click", () => {
@@ -5576,6 +6464,42 @@ function renderPersonMemories() {
       return response.json();
     }
 
+    async function requestGraphReview() {
+      const response = await api("/api/memory-review-graph", {
+        method: "POST",
+        body: JSON.stringify({
+          confirmedFacts: state.confirmedFacts.slice(0, 30),
+          dailyLogs: state.dailyLogs.slice(0, 20),
+          memoryCards: state.memoryCards.slice(0, 15)
+        })
+      });
+      if (!response.ok) throw new Error("graph review failed");
+      return response.json();
+    }
+
+    async function requestDailyRecap() {
+      const yesterdayKey = getDateKey(new Date(Date.now() - 86400000).toISOString());
+      const yesterdayLogs = state.dailyLogs.filter((l) => {
+        const key = String(l.timelineKey || getDateKey(l.createdAt || "")).trim();
+        return key === yesterdayKey;
+      }).slice(0, 15);
+      const yesterdayChat = state.messages.filter((m) => {
+        const key = getDateKey(m.createdAt || "");
+        return key === yesterdayKey && (m.type === "user" || m.type === "ai");
+      }).slice(-20).map((m) => ({ role: m.type === "user" ? "user" : "assistant", text: m.text }));
+      const response = await api("/api/daily-recap", {
+        method: "POST",
+        body: JSON.stringify({
+          dailyLogs: yesterdayLogs,
+          recentChat: yesterdayChat,
+          confirmedFacts: state.confirmedFacts.slice(0, 10),
+          companionName: getCompanionName()
+        })
+      });
+      if (!response.ok) throw new Error("daily recap failed");
+      return response.json();
+    }
+
     async function requestMemoryStructure(text, draft = {}) {
       const response = await api("/api/memory-structure", {
         method: "POST",
@@ -5814,6 +6738,8 @@ function renderPersonMemories() {
 
       state.activeEventContext = rawState.activeEventContext || state.activeEventContext || null;
       state.revisionLogs = Array.isArray(rawState.revisionLogs) ? rawState.revisionLogs : state.revisionLogs;
+      state.dailyLogs = Array.isArray(rawState.dailyLogs) ? rawState.dailyLogs.map((item, index) => normalizeDailyLog(item, index)) : state.dailyLogs;
+      state.moodRecords = Array.isArray(rawState.moodRecords) ? rawState.moodRecords.map((item, index) => normalizeMoodRecord(item, index)) : state.moodRecords;
       state.memoryCandidates = Array.isArray(rawState.memoryCandidates)
         ? rawState.memoryCandidates.map((item) => ({
             ...normalizePendingCueItem(item),
@@ -5852,9 +6778,12 @@ function renderPersonMemories() {
         { label: "后端连通", value: getApiHealthLabel(), type: "text" },
         { label: "记忆图谱入口", value: `${state.memoryCards.length} 页 / ${state.photos.length} 张照片`, type: "text" }
       ];
+      renderBookCards();
+      renderGraph();
       renderChrome();
       renderPendingCues();
       renderProfileSections();
+      renderDrawer();
     }
 
     async function hydrateServerData() {
@@ -5863,6 +6792,8 @@ function renderPersonMemories() {
         conversations: state.conversations.length ? state.conversations : migrateLegacyConversations(),
         activeConversationId: state.activeConversationId || state.conversations[0]?.id || "today",
         memories: state.memoryCards.map(serializeMemoryCard),
+        dailyLogs: state.dailyLogs,
+        moodRecords: state.moodRecords,
         settings: {
           companionName: "温伴",
           fontSize: "17px",
@@ -5999,6 +6930,59 @@ function renderPersonMemories() {
       profile: "panelProfile"
     };
 
+    function maybeSendDailyRecap() {
+      const now = new Date();
+      const hour = now.getHours();
+      if (hour < 18) return;
+      const todayKey = getDateKey(now.toISOString());
+      if (state.lastDailyRecapDate === todayKey) return;
+      state.lastDailyRecapDate = todayKey;
+      requestDailyRecap()
+        .then((result) => {
+          if (result.empty || !result.recap) return;
+          appendAiReply(result.recap);
+          renderChat();
+          persistChatState().catch((e) => console.error(e));
+        })
+        .catch((error) => {
+          console.error("Daily recap failed:", error);
+          state.lastDailyRecapDate = "";
+        });
+    }
+
+    function maybeAutoGraphReview() {
+      const now = Date.now();
+      const hourMs = 60 * 60 * 1000;
+      const hasData = state.confirmedFacts.length > 0 || state.dailyLogs.length > 0;
+      const timeSinceReview = now - (state.lastGraphReviewTime || 0);
+      if (!hasData || timeSinceReview < hourMs) return;
+      state.lastGraphReviewTime = now;
+      state.messageCountSinceReview = 0;
+      const btn = document.getElementById("graphReviewBtn");
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "正在分析...";
+      }
+      withTimeout(requestGraphReview(), 20000, "auto graph review timeout")
+        .then((result) => {
+          const suggestions = Array.isArray(result.suggestions) ? result.suggestions : [];
+          if (suggestions.length && state.activeTab === "graph") {
+            openSheet("graphReview", { suggestions });
+          } else if (suggestions.length) {
+            appendAiReply(`我刚回顾了一下你的记忆图谱，发现 ${suggestions.length} 条可以整理的建议。你切到图谱页点"整理回顾"就能看到。`);
+          }
+        })
+        .catch((error) => {
+          console.error("Auto graph review failed:", error);
+        })
+        .finally(() => {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = "整理回顾";
+          }
+        });
+    }
+
     function switchTab(tab) {
       state.activeTab = tab;
       document.querySelectorAll(".page").forEach((page) => {
@@ -6010,6 +6994,12 @@ function renderPersonMemories() {
         item.classList.toggle("active", item.dataset.tab === tab);
         item.setAttribute("aria-selected", item.dataset.tab === tab ? "true" : "false");
       });
+      if (tab === "graph") {
+        maybeAutoGraphReview();
+      }
+      if (tab === "chat") {
+        maybeSendDailyRecap();
+      }
       console.log("switchTab ->", tab, panelMap[tab]);
     }
 
@@ -6065,6 +7055,7 @@ function renderPersonMemories() {
           const normalized = String(nextTitle || "").trim();
           if (!normalized) return;
           conversation.title = normalized;
+          conversation.titleSource = "manual";
           syncLegacyChatStateFromConversations();
           renderDrawer();
           await persistChatState();
@@ -6125,6 +7116,27 @@ function renderPersonMemories() {
       document.querySelectorAll(".graph-switch").forEach((button) => {
         button.addEventListener("click", () => switchGraphView(button.dataset.graphView));
       });
+      document.getElementById("graphReviewBtn")?.addEventListener("click", async () => {
+        const btn = document.getElementById("graphReviewBtn");
+        if (!btn || btn.disabled) return;
+        btn.disabled = true;
+        btn.textContent = "正在分析...";
+        try {
+          const result = await withTimeout(requestGraphReview(), 20000, "graph review timeout");
+          const suggestions = Array.isArray(result.suggestions) ? result.suggestions : [];
+          if (!suggestions.length) {
+            appendAiReply("我刚才回顾了一下你的记忆图谱，目前整理得很好，暂时没有需要调整的地方。");
+            return;
+          }
+          openSheet("graphReview", { suggestions });
+        } catch (error) {
+          console.error(error);
+          appendAiReply("刚才回顾记忆图谱时出了点问题，你可以稍后再试一次。");
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "整理回顾";
+        }
+      });
       document.getElementById("closeSheetBtn").addEventListener("click", closeSheet);
       document.getElementById("modalOverlay").addEventListener("click", closeSheet);
       document.getElementById("photoPickerInput").addEventListener("change", async (event) => {
@@ -6151,6 +7163,8 @@ function renderPersonMemories() {
       renderBookCards();
       renderPendingCues();
       renderGraph();
+      renderPhotoGrid();
+      renderPhotoStoryList();
       renderSettings();
       renderDrawer();
       renderChrome();
@@ -6179,6 +7193,7 @@ function renderPersonMemories() {
         renderDrawer();
         renderChrome();
         renderProfileSections();
+        maybeSendDailyRecap();
       } catch (error) {
         console.error("hydrate failed", error);
       }

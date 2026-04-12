@@ -13,6 +13,7 @@ const require = createRequire(import.meta.url);
 const nodejieba = require('nodejieba');
 const natural = require('natural');
 const FACT_SEMANTICS = require('./config/fact_semantics.json');
+const EVENT_TYPES = require('./config/event_types.json');
 
 const app = express();
 app.disable('x-powered-by');
@@ -58,7 +59,9 @@ const SERVER_STATE_KEYS = [
   'lastChatRecap',
   'memoryCues',
   'strategyTrail',
+  'dailyLogs',
   'memoryCandidates',
+  'moodRecords',
   'lifeSummaries',
   'profileInsights',
   'healthProfile',
@@ -84,7 +87,9 @@ const DEFAULT_SERVER_STATE = {
   lastChatRecap: null,
   memoryCues: [],
   strategyTrail: [],
+  dailyLogs: [],
   memoryCandidates: [],
+  moodRecords: [],
   lifeSummaries: [],
   profileInsights: null,
   healthProfile: {
@@ -116,6 +121,9 @@ const eventSentenceClassifier = new natural.BayesClassifier();
   ['昨天和老伴下棋', 'event_sentence'],
   ['我刚刚和李阿姨通了电话', 'event_sentence'],
   ['今天我做了红烧肉', 'event_sentence'],
+  ['前天和赵姐看电影', 'event_sentence'],
+  ['前天和赵姐看电影，后来又写了挽救计划', 'event_sentence'],
+  ['写了挽救计划', 'event_follow_up'],
   ['清橙拿铁', 'answer_fragment'],
   ['李阿姨', 'answer_fragment'],
   ['昨天', 'answer_fragment'],
@@ -454,7 +462,6 @@ function extractEventAnalysis(text = '') {
   if (!value) {
     return {
       utteranceType: 'non_event',
-      classifierScores: [],
       tokens: [],
       actions: [],
       objects: [],
@@ -463,9 +470,6 @@ function extractEventAnalysis(text = '') {
     };
   }
 
-  const classifierScores = eventSentenceClassifier.getClassifications(value);
-  const topLabel = classifierScores[0]?.label || 'non_event';
-  const topScore = classifierScores[0]?.value || 0;
   const taggedTokens = nodejieba.tag(value).map((item) => ({
     word: String(item.word || '').trim(),
     tag: String(item.tag || '').trim()
@@ -497,17 +501,23 @@ function extractEventAnalysis(text = '') {
   const uniqueActions = Array.from(new Set(actions));
   const uniqueObjects = Array.from(new Set(objects));
   const uniquePhrases = Array.from(new Set(eventPhrases));
-  const structuralScore = Math.min(1, (
+  const eventLikeScore = Math.min(1, (
     (uniqueActions.length ? 0.45 : 0)
     + (uniqueObjects.length ? 0.25 : 0)
     + (uniquePhrases.length ? 0.15 : 0)
-    + (/[今天昨天前天刚刚前几天上次那次]/.test(value) ? 0.1 : 0)
+    + (/[今天昨天前天刚刚前几天上次那次后来随后之后那天]/.test(value) ? 0.1 : 0)
   ));
-  const eventLikeScore = Math.max(topScore, structuralScore);
+
+  let utteranceType = 'non_event';
+  if (/^(你好|您好|在吗|哈喽|嗨|早上好|晚上好|晚安|拜拜|再见)[！!。.]?$/.test(value)) utteranceType = 'non_event';
+  else if (/^(嗯|哦|啊|好|对|是啊)[！!。.]?$/.test(value)) utteranceType = 'non_event';
+  else if (/^(不是|我刚刚说错了|你没听懂|不对|哦不对)/.test(value)) utteranceType = 'revision_fragment';
+  else if (/(闪退|版本|同步|没保存|没来得及|看不到)/.test(value)) utteranceType = 'meta_conversation';
+  else if (value.length <= 6 && !uniqueActions.length) utteranceType = 'answer_fragment';
+  else if (eventLikeScore >= 0.55) utteranceType = 'event_sentence';
 
   return {
-    utteranceType: topLabel,
-    classifierScores,
+    utteranceType,
     tokens: taggedTokens,
     actions: uniqueActions,
     objects: uniqueObjects,
@@ -1041,6 +1051,8 @@ function normalizeMemoryStructure(data = {}) {
     actions: sanitizeStringList(data.actions),
     tags: sanitizeStringList(data.tags, 10),
     retrievalText: String(data.retrievalText || '').trim(),
+    eventType: String(data.eventType || '').trim(),
+    eventCategory: String(data.eventCategory || '').trim(),
     embedding: null
   };
 }
@@ -1529,6 +1541,74 @@ app.put('/api/state/:key', async (req, res) => {
   }
 });
 
+async function asyncLlmFactDedup(confirmedFacts = [], currentCandidates = []) {
+  if (!DEEPSEEK_KEY || confirmedFacts.length < 2) return;
+  const factsForReview = confirmedFacts.slice(0, 40).map((f, i) => ({
+    idx: i,
+    id: String(f.id || '').trim(),
+    label: String(f.canonicalLabel || f.label || '').trim(),
+    predicate: String(f.predicate || '').trim(),
+    object: String(f.object || '').trim(),
+    people: sanitizeStringList(f.relatedPeople, 3)
+  }));
+
+  const messages = [
+    {
+      role: 'system',
+      content: [
+        '你是一个中文事实去重助手。',
+        '下面是一组已确认的事实条目，请找出语义重复的事实对。',
+        '两条事实如果说的是同一件事（可能措辞不同），就算重复。',
+        '输出 JSON: { "duplicates": [{ "idA": "...", "idB": "...", "labelA": "...", "labelB": "...", "mergedLabel": "建议合并后的标签" }] }',
+        '最多返回 5 对。如果没有重复，返回 { "duplicates": [] }。',
+        '不要编造，不要输出 markdown。'
+      ].join('\n')
+    },
+    { role: 'user', content: JSON.stringify(factsForReview, null, 2) }
+  ];
+
+  const response = await axios.post(DEEPSEEK_URL, {
+    model: MODEL_NAME,
+    messages,
+    temperature: 0.1,
+    max_tokens: 500,
+    response_format: { type: 'json_object' }
+  }, {
+    headers: { Authorization: `Bearer ${DEEPSEEK_KEY}`, 'Content-Type': 'application/json' }
+  });
+
+  const raw = response.data?.choices?.[0]?.message?.content || '{}';
+  const parsed = JSON.parse(extractJsonBlock(raw));
+  const duplicates = Array.isArray(parsed.duplicates) ? parsed.duplicates.slice(0, 5) : [];
+  if (!duplicates.length) return;
+
+  const existingIds = new Set(currentCandidates.map((c) => String(c.id || '').trim()));
+  const newSuggestions = duplicates
+    .filter((d) => d.idA && d.idB && d.idA !== d.idB)
+    .filter((d) => !existingIds.has(`llm_dedup_${d.idA}_${d.idB}`))
+    .map((d) => ({
+      id: `llm_dedup_${d.idA}_${d.idB}`,
+      type: 'merge_suggestion',
+      candidateType: 'merge_suggestion',
+      label: `建议合并：${String(d.labelA || '').slice(0, 20)} ↔ ${String(d.labelB || '').slice(0, 20)}`,
+      summary: String(d.mergedLabel || '').trim(),
+      sourceText: `${d.labelA} + ${d.labelB}`,
+      mergeTargetFactId: d.idA,
+      proposedFact: confirmedFacts.find((f) => f.id === d.idB) || null,
+      mergeReason: `LLM 语义去重：这两条事实说的是同一件事`,
+      mergeConfidence: 0.75,
+      memorySignal: true,
+      confidence: 0.75
+    }))
+    .filter((s) => s.proposedFact);
+
+  if (!newSuggestions.length) return;
+
+  const state = await readServerState();
+  const nextCandidates = [...newSuggestions, ...(state.memoryCandidates || [])].slice(0, 30);
+  await patchServerState({ memoryCandidates: nextCandidates });
+}
+
 app.post('/api/confirmed-facts/confirm', async (req, res) => {
   try {
     const { candidateId = '', candidate = null, editedText = '' } = req.body || {};
@@ -1612,6 +1692,12 @@ app.post('/api/confirmed-facts/confirm', async (req, res) => {
       resolvedFact,
       mergeSuggestions: suggestions
     });
+
+    if (DEEPSEEK_KEY && saved.confirmedFacts.length >= 2) {
+      asyncLlmFactDedup(saved.confirmedFacts, saved.memoryCandidates).catch((err) =>
+        console.error('Async LLM fact dedup failed (non-blocking):', err.message)
+      );
+    }
   } catch (error) {
     res.status(500).json({
       error: 'Confirm fact failed.',
@@ -2281,8 +2367,11 @@ app.post('/api/reply-plan', async (req, res) => {
           '如果 retrieval.verifiedFacts 里已有 verified 的人物或时间，而当前输入又出现不稳定冲突，但用户并未明确修正，优先 needsConfirmation=true。',
           '如果 retrieval.activeEvent 已经包含人物、时间或动作，而当前输入只是短补充，应尽量设置 isActiveEventFollowUp=true，replyStrategy=continue_event。',
           '如果当前轮证据不足，优先 state_uncertainty 或 avoid_memory_claim，不要主动召回旧生活事件。',
-          '还要参考 retrieval.eventAnalysis。它是本地中文分词/词性与轻量分类器给出的结构线索：utteranceType, actions, objects, eventPhrases, eventLikeScore。',
-          '若 eventAnalysis.utteranceType = event_sentence 或 eventLikeScore >= 0.55，应优先把这轮视为事件句，而不是普通闲聊。',
+          '还要参考 retrieval.eventAnalysis。它是本地中文分词/词性给出的结构线索：utteranceType, actions, objects, eventPhrases, eventLikeScore。',
+          '若 eventAnalysis.eventLikeScore >= 0.55 或 actions 和 objects 都非空，应优先把这轮视为事件句，而不是普通闲聊。',
+          '如果 retrieval.localSignals.hasPeople, hasPlaces, hasTimes 里有两项及以上为 true，且不是元对话/纠正/逗趣问句，这一轮通常不应继续按 small_talk 压掉。',
+          '如果用户明确说了“今天/昨天/前天 + 去了哪里/见了谁/做了什么”，更接近 memory_narrative 或 chatting 下的可沉淀片段，memorySignal 要更积极一些。',
+          '如果句子里只是问“你不好奇老徐是谁”这类试探问句，没有给出稳定事实，memorySignal 仍然必须是 false。',
           '若 eventAnalysis.utteranceType = revision_fragment，应优先检查是不是在修订旧事件。',
           '若 eventAnalysis.utteranceType = answer_fragment，且当前句很短，应优先视为对上一轮问题的回答，而不是无意义短句。',
           '还要参考 retrieval.shortTurnAnalysis。若 fragmentType = answer_to_question，应优先把当前句当成回答槽位值；若 fragmentType = backchannel，才可按附和句处理；若 fragmentType = event_follow_up，应优先接回当前事件。',
@@ -2386,6 +2475,11 @@ app.post('/api/memory-filter', async (req, res) => {
           '如果 retrieval.localSignals.isMetaConversation 为 true，或 replyPlan.shouldAvoidMemoryRecall 为 true，则 memorySignal 必须是 false。',
           '如果当前轮主要是在纠正时间、人物、理解偏差，而没有新增稳定生活事实，则 memorySignal 必须是 false。',
           '如果是在说没存档、看不到卡片整理、点了忆光没保存、稍后看、闪退、版本稳定性等产品状态问题，memorySignal 必须是 false。',
+          '如果 retrieval.localSignals.hasPeople, hasPlaces, hasTimes 至少命中两项，而且句子里带具体动作或心情，不要轻易判成 false。',
+          '如果文本里同时出现“今天/昨天/前天”等时间和“公园/医院/家里/学校”等地点，或者同时出现人物和事件动作，应优先给出可进入待整理的候选。',
+          '如果 retrieval.localSignals.mood 存在，且这轮还有时间、人物、地点或事件锚点，可以把它当作 daily_fragment 或 event_memory 的补充，而不是直接丢掉。',
+          '如果上一轮 activeEvent 已经有明确人物或时间，而这一轮是短补充句，例如“后来写了计划”“又去买菜了”“还聊了电影”，应优先把它当作同一事件的续接，而不是判成普通闲聊。',
+          '像“前天和赵姐看电影”“昨天和老张下棋输了”这类 人物+时间+动作 的句子，即使很短，也应优先进入候选记忆。',
           '还要参考 retrieval.eventAnalysis。若 utteranceType = event_sentence 或 eventLikeScore >= 0.55，应优先把这轮识别为事件片段候选；若 actions 和 objects 同时存在，优先抽取动作短语，不要只靠人工关键词。',
           '若 utteranceType = answer_fragment，除非它明确补齐了上一轮事件的关键槽位，否则不要直接升为候选记忆。',
           '还要参考 retrieval.shortTurnAnalysis。若 fragmentType = answer_to_question，只有当它补齐的是人物、时间、动作、地点这类事件关键槽位时，才可帮助当前事件；不要把所有短答案直接升格为记忆。',
@@ -2427,10 +2521,8 @@ app.post('/api/memory-filter', async (req, res) => {
     const raw = response.data?.choices?.[0]?.message?.content || '{}';
     const parsed = JSON.parse(extractJsonBlock(raw));
     const normalized = normalizeMemoryFilter(parsed);
-    const promoted = !normalized.memorySignal && !retrieval?.localSignals?.isMetaConversation && !replyPlan?.shouldAvoidMemoryRecall
-      ? buildPromotedPersonCandidate(text, history, normalized)
-      : null;
-    res.json(promoted || normalized);
+    // NOTE: buildPromotedPersonCandidate 二次兜底已停用——LLM 判断不记时不再强行提取人物候选
+    res.json(normalized);
   } catch (error) {
     const detail = error.response?.data || error.message;
     res.status(500).json({
@@ -2550,7 +2642,7 @@ app.post('/api/memory-structure', async (req, res) => {
           '请从用户提供的一段回忆中抽取结构化信息，并且只返回 JSON。',
           '不要输出解释，不要输出 markdown，不要输出多余文字。',
           'JSON 必须包含这些字段：',
-          'title, summary, mood, people, timeRefs, timelineDate, timelineLabel, timeAccuracy, followUpQuestion, locations, actions, tags, retrievalText',
+          'title, summary, mood, people, timeRefs, timelineDate, timelineLabel, timeAccuracy, followUpQuestion, locations, actions, tags, retrievalText, eventType, eventCategory',
           'people 是对象数组，每项包含 name, relation, role。',
           '只有明确的人物才放进 people，不要把普通称呼、泛指词或分词碎片当成人物。',
           '例如“一个人”“大家”“有人”“医生”“老师”这类泛指，除非上下文明确到特定人物，否则不要抽取。',
@@ -2563,7 +2655,9 @@ app.post('/api/memory-structure', async (req, res) => {
           '如果没有把握，字段留空字符串或空数组，不要编造具体事实。',
           'title 应该是简短书页标题，summary 应该是一句概括。',
           'retrievalText 需要把人物、地点、时间、行为、摘要和原文整合成一段便于后续检索的文本。',
-          'mood 优先使用原文可判断出的情绪词，例如：温暖、怀念、难过、平静、安心、自豪、焦虑。'
+          'mood 优先使用原文可判断出的情绪词，例如：温暖、怀念、难过、平静、安心、自豪、焦虑。',
+          `eventType：从回忆中识别出的主要活动类型。优先从以下标准类型中选择：${Object.keys(EVENT_TYPES.eventTypes).join('、')}。如果不匹配任何标准类型，用简短中文描述（2-4字）。如果回忆中没有明确活动，留空字符串。`,
+          `eventCategory：eventType 对应的大类。标准大类有：${EVENT_TYPES.categories.join('、')}。如果 eventType 不在标准表中，根据语义判断最接近的大类；实在无法归类就填"${EVENT_TYPES.fallbackCategory}"。如果 eventType 为空，eventCategory 也留空。`
         ].join('\n')
       },
       {
@@ -2598,6 +2692,187 @@ app.post('/api/memory-structure', async (req, res) => {
       error: 'Memory structure request failed.',
       detail
     });
+  }
+});
+
+app.post('/api/memory-review-graph', async (req, res) => {
+  if (!DEEPSEEK_KEY) {
+    res.status(500).json({ error: 'Missing DEEPSEEK_API_KEY in environment.' });
+    return;
+  }
+
+  try {
+    const { confirmedFacts = [], dailyLogs = [], memoryCards = [] } = req.body || {};
+
+    const normalizedFacts = Array.isArray(confirmedFacts)
+      ? confirmedFacts.slice(0, 30).map((f) => ({
+          id: String(f.id || '').trim(),
+          canonicalLabel: String(f.canonicalLabel || f.label || '').trim(),
+          subject: String(f.subject || '').trim(),
+          predicate: String(f.predicate || '').trim(),
+          object: String(f.object || '').trim(),
+          relatedPeople: sanitizeStringList(f.relatedPeople, 4),
+          timeLabels: sanitizeStringList(f.timeLabels, 3),
+          sourceText: String(f.sourceText || '').trim().slice(0, 100)
+        }))
+      : [];
+
+    const normalizedLogs = Array.isArray(dailyLogs)
+      ? dailyLogs.slice(0, 20).map((l) => ({
+          summary: String(l.summary || '').trim(),
+          timelineKey: String(l.timelineKey || '').trim(),
+          tags: sanitizeStringList(l.tags, 4),
+          people: sanitizeStringList(l.people, 4)
+        }))
+      : [];
+
+    const normalizedCards = Array.isArray(memoryCards)
+      ? memoryCards.slice(0, 15).map((c) => ({
+          id: String(c.id || '').trim(),
+          text: String(c.text || c.content || '').trim().slice(0, 80),
+          tags: sanitizeStringList(c.tags, 4),
+          status: String(c.status || '').trim()
+        }))
+      : [];
+
+    if (!normalizedFacts.length && !normalizedLogs.length) {
+      res.json({ suggestions: [] });
+      return;
+    }
+
+    const messages = [
+      {
+        role: 'system',
+        content: [
+          '你是一个中文记忆图谱整理助手。',
+          '用户的记忆图谱里有确认事实(confirmedFacts)、每日记录(dailyLogs)和记忆卡片(memoryCards)。',
+          '请审查这些数据，找出以下三类问题并给出建议：',
+          '',
+          '1. duplicates：语义重复的事实对。如果两条 confirmedFacts 说的是同一件事（不同措辞），建议合并。',
+          '   输出: { "type": "duplicate", "factIdA": "...", "factIdB": "...", "labelA": "...", "labelB": "...", "suggestion": "建议合并为：..." }',
+          '',
+          '2. promotions：dailyLogs 中反复出现但尚未成为 confirmedFact 的模式。',
+          '   输出: { "type": "promotion", "pattern": "...", "occurrences": 数字, "suggestion": "建议确认为事实：..." }',
+          '',
+          '3. drafts：status 为 "draft" 的 memoryCards，建议重新整理的文字。',
+          '   输出: { "type": "draft_cleanup", "cardId": "...", "currentText": "...", "suggestion": "建议整理为：..." }',
+          '',
+          '输出 JSON: { "suggestions": [...] }，最多 8 条建议。',
+          '每条建议必须有 type 和 suggestion 字段。',
+          '如果数据质量很好没有问题，返回空数组 { "suggestions": [] }。',
+          '不要编造数据里没有的内容。不要输出 markdown。'
+        ].join('\n')
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          confirmedFacts: normalizedFacts,
+          dailyLogs: normalizedLogs,
+          memoryCards: normalizedCards
+        }, null, 2)
+      }
+    ];
+
+    const response = await axios.post(
+      DEEPSEEK_URL,
+      {
+        model: MODEL_NAME,
+        messages,
+        temperature: 0.3,
+        max_tokens: 1000,
+        response_format: { type: 'json_object' }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${DEEPSEEK_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const raw = response.data?.choices?.[0]?.message?.content || '{}';
+    const parsed = JSON.parse(extractJsonBlock(raw));
+    const suggestions = Array.isArray(parsed.suggestions) ? parsed.suggestions.slice(0, 8) : [];
+    res.json({ suggestions });
+  } catch (error) {
+    const detail = error.response?.data || error.message;
+    res.status(500).json({ error: 'Memory graph review failed.', detail });
+  }
+});
+
+app.post('/api/daily-recap', async (req, res) => {
+  if (!DEEPSEEK_KEY) {
+    res.status(500).json({ error: 'Missing DEEPSEEK_API_KEY in environment.' });
+    return;
+  }
+
+  try {
+    const { dailyLogs = [], recentChat = [], confirmedFacts = [], companionName = '温伴' } = req.body || {};
+
+    const logs = Array.isArray(dailyLogs)
+      ? dailyLogs.slice(0, 15).map((l) => String(l.summary || l.sourceText || '').trim()).filter(Boolean)
+      : [];
+    const chatLines = Array.isArray(recentChat)
+      ? recentChat.slice(0, 20).map((m) => `${m.role === 'user' ? '用户' : '助手'}：${String(m.text || m.content || '').trim().slice(0, 60)}`).filter(Boolean)
+      : [];
+    const facts = Array.isArray(confirmedFacts)
+      ? confirmedFacts.slice(0, 10).map((f) => String(f.canonicalLabel || f.label || '').trim()).filter(Boolean)
+      : [];
+
+    if (!logs.length && !chatLines.length) {
+      res.json({ recap: '', empty: true });
+      return;
+    }
+
+    const messages = [
+      {
+        role: 'system',
+        content: [
+          `你是"${companionName}"，一个温暖的老年记忆陪伴助手。`,
+          '现在是傍晚，请根据用户昨天的生活记录和对话，写一段温暖的每日回顾。',
+          '像老朋友傍晚打电话关心一样，自然地提到昨天发生的事。',
+          '要求：',
+          '- 用第二人称（你），语气温暖、生活化，像在跟老人聊天',
+          '- 简短，3-5 句话，不超过 120 字',
+          '- 只提昨天记录里真实出现的事，不编造',
+          '- 如果记录里有人名，自然带出来',
+          '- 如果昨天没什么特别的，就简单问候，不要硬凑',
+          '- 结尾可以轻轻问一句今天打算做什么',
+          '- 不要用 markdown，不要用书面语，不要列清单',
+          '只返回这段话本身，不要加任何 JSON 格式或字段名。'
+        ].join('\n')
+      },
+      {
+        role: 'user',
+        content: [
+          logs.length ? `昨天的生活记录：\n${logs.join('\n')}` : '',
+          chatLines.length ? `昨天的对话片段：\n${chatLines.join('\n')}` : '',
+          facts.length ? `已确认的长期记忆：${facts.join('、')}` : ''
+        ].filter(Boolean).join('\n\n')
+      }
+    ];
+
+    const response = await axios.post(
+      DEEPSEEK_URL,
+      {
+        model: MODEL_NAME,
+        messages,
+        temperature: 0.45,
+        max_tokens: 200
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${DEEPSEEK_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const recap = String(response.data?.choices?.[0]?.message?.content || '').trim();
+    res.json({ recap, empty: !recap });
+  } catch (error) {
+    const detail = error.response?.data || error.message;
+    res.status(500).json({ error: 'Daily recap failed.', detail });
   }
 });
 
