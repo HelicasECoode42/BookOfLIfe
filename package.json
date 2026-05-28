@@ -5,19 +5,39 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "build:mobile-web": "node scripts/build_mobile_web.mjs",
+    "cap:sync:ios": "node scripts/build_mobile_web.mjs && npx cap sync ios && node scripts/patch_ios_speech_spm.mjs",
+    "cap:open:ios": "npx cap open ios",
     "stage2:smoke": "node scripts/stage2_smoke_check.mjs",
+    "stageM2:app-smoke": "node scripts/stage_m2_app_shell_smoke.mjs",
+    "stageM3:ios-smoke": "node scripts/stage_m3_ios_shell_smoke.mjs",
     "stage9:backend-smoke": "node scripts/stage9_backend_smoke.mjs",
     "stage11:photo-smoke": "node scripts/stage11_photo_wall_smoke.mjs",
     "stage12:avatar-smoke": "node scripts/stage12_avatar_smoke.mjs",
     "stage13:integration-smoke": "node scripts/stage13_integration_smoke.mjs",
-    "stage14:privacy-smoke": "node scripts/stage14_privacy_smoke.mjs"
+    "stage14:privacy-smoke": "node scripts/stage14_privacy_smoke.mjs",
+    "stage19:agent-eval": "node scripts/stage19_agent_eval.mjs",
+    "stage19:agent-eval-real": "node scripts/stage19_agent_eval.mjs --real-llm",
+    "stage20:maxsteps-partial-smoke": "node scripts/stage20_maxsteps_partial_smoke.mjs",
+    "stage21:policy-retrieval-smoke": "node scripts/stage21_policy_retrieval_smoke.mjs",
+    "stage22:layered-memory-smoke": "node scripts/stage22_layered_memory_smoke.mjs",
+    "stage22:timeline-endpoint-smoke": "node scripts/stage22_timeline_endpoint_smoke.mjs",
+    "stage23:clarification-smoke": "node scripts/stage23_clarification_smoke.mjs"
   },
   "dependencies": {
+    "@capacitor-community/speech-recognition": "^7.0.1",
+    "@capacitor/camera": "^8.0.2",
+    "@capacitor/cli": "^8.3.0",
+    "@capacitor/core": "^8.3.0",
+    "@capacitor/ios": "^8.3.0",
     "axios": "^1.11.0",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
     "natural": "^8.1.1",
     "nodejieba": "^3.5.8"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.2"
   }
 }
