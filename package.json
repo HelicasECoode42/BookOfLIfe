@@ -15,7 +15,14 @@
     "stage11:photo-smoke": "node scripts/stage11_photo_wall_smoke.mjs",
     "stage12:avatar-smoke": "node scripts/stage12_avatar_smoke.mjs",
     "stage13:integration-smoke": "node scripts/stage13_integration_smoke.mjs",
-    "stage14:privacy-smoke": "node scripts/stage14_privacy_smoke.mjs"
+    "stage14:privacy-smoke": "node scripts/stage14_privacy_smoke.mjs",
+    "stage19:agent-eval": "node scripts/stage19_agent_eval.mjs",
+    "stage19:agent-eval-real": "node scripts/stage19_agent_eval.mjs --real-llm",
+    "stage20:maxsteps-partial-smoke": "node scripts/stage20_maxsteps_partial_smoke.mjs",
+    "stage21:policy-retrieval-smoke": "node scripts/stage21_policy_retrieval_smoke.mjs",
+    "stage22:layered-memory-smoke": "node scripts/stage22_layered_memory_smoke.mjs",
+    "stage22:timeline-endpoint-smoke": "node scripts/stage22_timeline_endpoint_smoke.mjs",
+    "stage23:clarification-smoke": "node scripts/stage23_clarification_smoke.mjs"
   },
   "dependencies": {
     "@capacitor-community/speech-recognition": "^7.0.1",
